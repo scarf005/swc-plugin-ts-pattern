@@ -278,3 +278,96 @@ test("throwing match initializer does not initialize its lexical binding", async
     "ReferenceError",
   )
 })
+
+test("snapshots the match input before a predicate can mutate its binding", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let input = 1;
+      return match(input)
+        .with(P.when(() => { input = 2; return false; }), () => 0)
+        .otherwise((value) => value);
+    };
+  `,
+    1,
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("reads wildcard properties once in pattern order", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const reads = [];
+      const input = {
+        get first() { reads.push("first"); return 1; },
+        get second() { reads.push("second"); return 2; },
+      };
+      const result = match(input)
+        .with({ first: P._, second: P._ }, () => "matched")
+        .otherwise(() => "other");
+      return [result, reads];
+    };
+  `,
+    ["matched", ["first", "second"]],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("captures selected getter values instead of rereading them", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let reads = 0;
+      const input = { get value() { return ++reads; } };
+      const result = match(input)
+        .with({ value: P.select(P.number) }, (value) => value)
+        .otherwise(() => 0);
+      return [result, reads];
+    };
+  `,
+    [1, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("evaluates computed pattern keys once", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      let calls = 0;
+      const key = () => { calls++; return "value"; };
+      const input = { value: 1 };
+      const result = match(input)
+        .with({ [key()]: 1 }, () => "matched")
+        .otherwise(() => "other");
+      return [result, calls];
+    };
+  `,
+    ["matched", 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("evaluates later arm arguments after an earlier match", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      let calls = 0;
+      const next = () => { calls++; return () => 2; };
+      const result = match(1)
+        .with(1, () => 1)
+        .with(2, next())
+        .otherwise(() => 0);
+      return [result, calls];
+    };
+  `,
+    [1, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
