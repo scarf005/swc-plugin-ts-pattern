@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use swc_core::{
-    common::DUMMY_SP,
+    common::{SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
         utils::{private_ident, quote_ident},
@@ -11,8 +11,11 @@ use swc_core::{
 };
 
 #[plugin_transform]
-pub fn process_transform(program: Program, _metadata: TransformPluginProgramMetadata) -> Program {
-    let mut transformer = TsPatternTransformer::default();
+pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
+    let mut transformer = TsPatternTransformer {
+        unresolved_ctxt: SyntaxContext::empty().apply_mark(metadata.unresolved_mark),
+        ..Default::default()
+    };
     let mut program = program;
     program.visit_mut_with(&mut transformer);
     program
@@ -20,6 +23,7 @@ pub fn process_transform(program: Program, _metadata: TransformPluginProgramMeta
 
 #[derive(Default)]
 struct TsPatternTransformer {
+    unresolved_ctxt: SyntaxContext,
     match_imports: HashSet<Id>,
     p_imports: HashSet<Id>,
     namespaces: HashSet<Id>,
@@ -1446,6 +1450,16 @@ impl TsPatternTransformer {
             return Some(predicate_result(&call.args[0].expr, value));
         }
 
+        if is_zero_literal(pattern) {
+            return Some(call_expr(
+                member_expr(
+                    Expr::Ident(Ident::new("Object".into(), DUMMY_SP, self.unresolved_ctxt)),
+                    "is",
+                ),
+                vec![value, pattern.clone()],
+            ));
+        }
+
         match pattern {
             Expr::Lit(Lit::Str(_))
             | Expr::Lit(Lit::Num(_))
@@ -1803,6 +1817,10 @@ fn is_switchable_arm(arm: &MatchArm) -> bool {
 }
 
 fn is_switch_literal(expr: &Expr) -> bool {
+    // switch uses ===, whereas ts-pattern distinguishes +0 from -0.
+    if is_zero_literal(expr) {
+        return false;
+    }
     matches!(
         expr,
         Expr::Lit(Lit::Str(_))
@@ -1815,6 +1833,16 @@ fn is_switch_literal(expr: &Expr) -> bool {
 
 fn is_number_literal(expr: &Expr) -> bool {
     matches!(expr, Expr::Lit(Lit::Num(_)))
+}
+
+fn is_zero_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Lit(Lit::Num(number)) => number.value == 0.0,
+        Expr::Unary(unary) if unary.op == UnaryOp::Minus => {
+            matches!(&*unary.arg, Expr::Lit(Lit::Num(number)) if number.value == 0.0)
+        }
+        _ => false,
+    }
 }
 
 fn is_function_expr(expr: &Expr) -> bool {
