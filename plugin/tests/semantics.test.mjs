@@ -155,6 +155,47 @@ test("P.when invokes member predicates with one argument and no receiver", async
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+for (const declaration of ["expression", "arrow", "assignment"]) {
+  test(`${declaration} distinguishes positive and negative zero patterns`, async () => {
+    const terminal = declaration === "assignment"
+      ? "exhaustive()"
+      : "otherwise(() => 'other')"
+    const scalar =
+      `match(input).with(0, () => 'positive').with(-0, () => 'negative').${terminal}`
+    const object =
+      `match(input).with({ value: 0 }, () => 'positive').with({ value: -0 }, () => 'negative').${terminal}`
+    const body = (chain) =>
+      declaration === "arrow"
+        ? `input => ${chain}`
+        : `input => { const result = ${chain}; return result; }`
+    const code = await assertEquivalent(
+      `
+      import { match } from "ts-pattern";
+      const scalar = ${body(scalar)};
+      const object = ${body(object)};
+      export const run = () => [scalar(0), scalar(-0), object({value: 0}), object({value: -0})];
+    `,
+      ["positive", "negative", "positive", "negative"],
+    )
+    assert.doesNotMatch(code, /\.with\(/)
+  })
+}
+
+test("zero matching is not captured by a local Object binding", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      const Object = { is: () => false };
+      const input = 0;
+      return [match(input).with(0, () => true).otherwise(() => false), Object.is(0, 0)];
+    };
+  `,
+    [true, false],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
 for (const kind of ["const", "let"]) {
   test(`${kind} initializer retains its temporal dead zone`, async () => {
     await assertEquivalent(
