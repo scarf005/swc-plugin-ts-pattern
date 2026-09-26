@@ -5,6 +5,7 @@ test:
     cd plugin && npm ci
     cargo test --manifest-path plugin/Cargo.toml
     cd plugin && npm run build
+    cd plugin && npm run test:runtime
     cd web && deno task check
     cd web && deno task test
     just check-examples

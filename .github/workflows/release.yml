@@ -40,6 +40,9 @@ jobs:
       - name: Build SWC plugin wasm
         working-directory: plugin
         run: npm run build
+      - name: Plugin runtime regression tests
+        working-directory: plugin
+        run: npm run test:runtime
       - name: Web check
         working-directory: web
         run: deno task check

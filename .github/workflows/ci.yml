@@ -38,6 +38,9 @@ jobs:
       - run: npm run build
         working-directory: plugin
 
+      - run: npm run test:runtime
+        working-directory: plugin
+
       - run: npm pack --dry-run --ignore-scripts
         working-directory: plugin
 

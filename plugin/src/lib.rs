@@ -737,9 +737,9 @@ impl TsPatternTransformer {
 
         for stmt in stmts {
             match stmt {
-                Stmt::Decl(Decl::Var(var)) if var.decls.len() == 1 => {
+                Stmt::Decl(Decl::Var(mut var)) if var.decls.len() == 1 => {
                     let decl = &var.decls[0];
-                    let Pat::Ident(ident) = &decl.name else {
+                    let Pat::Ident(_) = &decl.name else {
                         rewritten.push(Stmt::Decl(Decl::Var(var)));
                         continue;
                     };
@@ -751,15 +751,20 @@ impl TsPatternTransformer {
                         rewritten.push(Stmt::Decl(Decl::Var(var)));
                         continue;
                     };
+                    let result = private_ident!("_tsPatternResult");
                     let Some(mut assign_stmts) =
-                        self.compile_assign_match_stmts(ident_expr(&ident.id), chain)
+                        self.compile_assign_match_stmts(ident_expr(&result), chain)
                     else {
                         rewritten.push(Stmt::Decl(Decl::Var(var)));
                         continue;
                     };
 
-                    rewritten.push(var_without_init(var.kind, ident.id.clone()));
+                    // Initialize the original binding only after the match succeeds.
+                    // Declaring it earlier would end its TDZ and turn const into let.
+                    var.decls[0].init = Some(Box::new(ident_expr(&result)));
+                    rewritten.push(var_without_init(VarDeclKind::Let, result));
                     rewritten.append(&mut assign_stmts);
+                    rewritten.push(Stmt::Decl(Decl::Var(var)));
                 }
                 other => rewritten.push(other),
             }
@@ -2846,7 +2851,10 @@ export const render = (result: { type: "error" } | { type: "ok"; data: { type: "
 };"#,
         );
 
-        assert!(output.contains("let html;"), "{output}");
+        assert!(
+            output.contains("const html = _tsPatternResult;"),
+            "{output}"
+        );
         assert!(output.contains("switch(result.type)"), "{output}");
         assert!(
             output.contains("const _tsPatternData = result.data"),
@@ -2871,8 +2879,14 @@ export const render = (result: { type: "error" } | { type: "ok"; data: { type: "
             "{output}"
         );
         assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
-        assert!(output.contains("html = result.data.content"), "{output}");
-        assert!(output.contains("html = _tsPatternData.src"), "{output}");
+        assert!(
+            output.contains("_tsPatternResult = result.data.content"),
+            "{output}"
+        );
+        assert!(
+            output.contains("_tsPatternResult = _tsPatternData.src"),
+            "{output}"
+        );
         assert!(!output.contains("result !== null && typeof result === \"object\" && \"data\" in result && result.data !== null"), "{output}");
     }
 

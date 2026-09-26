@@ -43,7 +43,8 @@
   ],
   "scripts": {
     "build": "cargo build --release --target wasm32-wasip1 && cp target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
-    "test": "cargo test",
+    "test": "cargo test && npm run build && npm run test:runtime",
+    "test:runtime": "node --test tests/*.test.mjs",
     "prepack": "npm run build"
   },
   "keywords": [
