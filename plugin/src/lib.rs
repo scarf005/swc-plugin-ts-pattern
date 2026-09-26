@@ -46,6 +46,7 @@ struct MatchArm {
 #[derive(Clone)]
 enum Fallback {
     Otherwise(Box<Expr>),
+    Matched(Box<Expr>),
     Exhaustive,
 }
 
@@ -364,7 +365,8 @@ impl TsPatternTransformer {
         let mut cases = Vec::new();
 
         for arm in chain.arms {
-            let handler_call = handler_result(arm.handler, input_expr.clone());
+            let handler_call =
+                handler_result(arm.handler, vec![input_expr.clone(), input_expr.clone()]);
             let mut arm_patterns = arm.patterns.into_iter().peekable();
 
             while let Some(pattern) = arm_patterns.next() {
@@ -471,7 +473,10 @@ impl TsPatternTransformer {
                     &arm,
                     known_match_object,
                 )?),
-                cons: Box::new(return_stmt(handler_result(arm.handler, handler_input))),
+                cons: Box::new(return_stmt(handler_result(
+                    arm.handler,
+                    vec![handler_input, handler_input_expr.clone()],
+                ))),
                 alt: None,
             }));
         }
@@ -651,7 +656,7 @@ impl TsPatternTransformer {
                 )?),
                 cons: Box::new(assign_stmt(
                     target.clone(),
-                    handler_result(arm.handler, handler_input),
+                    handler_result(arm.handler, vec![handler_input, handler_input_expr.clone()]),
                 )),
                 alt: Some(Box::new(current)),
             });
@@ -782,13 +787,13 @@ impl TsPatternTransformer {
         let Fallback::Otherwise(fallback) = chain.fallback else {
             return None;
         };
-        let mut expression = handler_result(fallback, input.clone());
+        let mut expression = handler_result(fallback, vec![input.clone()]);
 
         for arm in chain.arms.into_iter().rev() {
             let handler_input = arm_handler_input(self, input.clone(), input.clone(), &arm)?;
             expression = cond_expr(
                 arm_test(self, input.clone(), input.clone(), &arm, false)?,
-                handler_result(arm.handler, handler_input),
+                handler_result(arm.handler, vec![handler_input, input.clone()]),
                 expression,
             );
         }
@@ -1768,9 +1773,9 @@ fn predicate_result(predicate: &Expr, input_expr: Expr) -> Expr {
                 }
             }
 
-            call_handler(Box::new(predicate.clone()), input_expr)
+            call_handler(Box::new(predicate.clone()), vec![input_expr])
         }
-        _ => call_handler(Box::new(predicate.clone()), input_expr),
+        _ => call_handler(Box::new(predicate.clone()), vec![input_expr]),
     }
 }
 
@@ -2054,7 +2059,7 @@ fn strip_group_arms(
                 handler: arm.handler,
             }),
             None => {
-                fallback = Fallback::Otherwise(arm.handler);
+                fallback = Fallback::Matched(arm.handler);
                 break;
             }
         }
@@ -2170,7 +2175,13 @@ fn fallback_stmts(
     exhaustive_error_callee: Option<Expr>,
 ) -> Vec<Stmt> {
     match fallback {
-        Fallback::Otherwise(handler) => vec![return_stmt(handler_result(handler, input_expr))],
+        Fallback::Otherwise(handler) => {
+            vec![return_stmt(handler_result(handler, vec![input_expr]))]
+        }
+        Fallback::Matched(handler) => vec![return_stmt(handler_result(
+            handler,
+            vec![input_expr.clone(), input_expr],
+        ))],
         Fallback::Exhaustive => vec![throw_exhaustive_stmt(
             exhaustive_error_callee.expect("exhaustive error callee"),
             input_expr,
@@ -2220,7 +2231,13 @@ fn fallback_stmt(
     exhaustive_error_callee: &mut impl FnMut() -> Expr,
 ) -> Stmt {
     match fallback {
-        Fallback::Otherwise(handler) => assign_stmt(target, handler_result(handler, input_expr)),
+        Fallback::Otherwise(handler) => {
+            assign_stmt(target, handler_result(handler, vec![input_expr]))
+        }
+        Fallback::Matched(handler) => assign_stmt(
+            target,
+            handler_result(handler, vec![input_expr.clone(), input_expr]),
+        ),
         Fallback::Exhaustive => throw_exhaustive_stmt(exhaustive_error_callee(), input_expr),
     }
 }
@@ -2251,78 +2268,29 @@ fn var_without_init(kind: VarDeclKind, ident: Ident) -> Stmt {
     })))
 }
 
-fn handler_result(handler: Box<Expr>, input_expr: Expr) -> Expr {
-    match *handler {
-        Expr::Arrow(ArrowExpr {
-            params,
-            body,
-            is_async: false,
-            is_generator: false,
-            ..
-        }) if params.is_empty() => match *body {
-            BlockStmtOrExpr::Expr(expr) => *expr,
-            BlockStmtOrExpr::BlockStmt(block) => call_handler(
-                Box::new(Expr::Arrow(ArrowExpr {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    params,
-                    body: Box::new(BlockStmtOrExpr::BlockStmt(block)),
-                    is_async: false,
-                    is_generator: false,
-                    type_params: None,
-                    return_type: None,
-                })),
-                input_expr,
-            ),
-        },
-        Expr::Arrow(ArrowExpr {
-            params,
-            body,
-            is_async: false,
-            is_generator: false,
-            ..
-        }) if params.len() == 1 => match *body {
-            BlockStmtOrExpr::Expr(expr) => {
+fn handler_result(handler: Box<Expr>, args: Vec<Expr>) -> Expr {
+    if let Expr::Arrow(ArrowExpr {
+        params,
+        body,
+        is_async: false,
+        is_generator: false,
+        ..
+    }) = &*handler
+    {
+        if let BlockStmtOrExpr::Expr(expr) = &**body {
+            if params.is_empty() {
+                return *expr.clone();
+            }
+            if params.len() == 1 {
                 if let Some(inlined) =
-                    inline_simple_handler_body(&params[0], input_expr.clone(), *expr.clone())
+                    inline_simple_lambda_body(&params[0], args[0].clone(), *expr.clone())
                 {
                     return inlined;
                 }
-
-                call_handler(
-                    Box::new(Expr::Arrow(ArrowExpr {
-                        span: DUMMY_SP,
-                        ctxt: Default::default(),
-                        params,
-                        body: Box::new(BlockStmtOrExpr::Expr(expr)),
-                        is_async: false,
-                        is_generator: false,
-                        type_params: None,
-                        return_type: None,
-                    })),
-                    input_expr,
-                )
             }
-            BlockStmtOrExpr::BlockStmt(block) => call_handler(
-                Box::new(Expr::Arrow(ArrowExpr {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    params,
-                    body: Box::new(BlockStmtOrExpr::BlockStmt(block)),
-                    is_async: false,
-                    is_generator: false,
-                    type_params: None,
-                    return_type: None,
-                })),
-                input_expr,
-            ),
-        },
-        handler => call_handler(Box::new(handler), input_expr),
+        }
     }
-}
-
-fn inline_simple_handler_body(param: &Pat, input_expr: Expr, body: Expr) -> Option<Expr> {
-    inline_simple_lambda_body(param, input_expr, body)
+    call_handler(handler, args)
 }
 
 fn inline_simple_lambda_body(param: &Pat, input_expr: Expr, mut body: Expr) -> Option<Expr> {
@@ -2440,14 +2408,18 @@ impl VisitMut for InlineBindings {
     }
 }
 
-fn call_handler(handler: Box<Expr>, input_expr: Expr) -> Expr {
-    call_expr(
-        Expr::Paren(ParenExpr {
+fn call_handler(handler: Box<Expr>, args: Vec<Expr>) -> Expr {
+    // ts-pattern receives a callback value, not a member reference. Parentheses
+    // alone preserve a member's receiver; a comma expression removes it.
+    let callee = if is_function_expr(&handler) {
+        *handler
+    } else {
+        Expr::Seq(SeqExpr {
             span: DUMMY_SP,
-            expr: handler,
-        }),
-        vec![input_expr],
-    )
+            exprs: vec![Box::new(bool_lit(false)), handler],
+        })
+    };
+    call_expr(paren_expr(callee), args)
 }
 
 fn call_expr(callee: Expr, args: Vec<Expr>) -> Expr {
