@@ -553,6 +553,24 @@ test("record wildcard key selections preserve original and coerced keys", async 
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+test("prototype selection names preserve the original input callback", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const object = match({ a: 1 })
+        .with(P.select("__proto__"), (value) => value)
+        .otherwise(() => null);
+      const scalar = match(1)
+        .with(P.number.select("__proto__"), (value) => value)
+        .otherwise(() => null);
+      return [object, scalar];
+    };
+  `,
+    [{ a: 1 }, 1],
+  )
+})
+
 test("record key selections preserve numeric coercion and both key matches", async () => {
   const code = await assertEquivalent(
     `
