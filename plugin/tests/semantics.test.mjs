@@ -572,6 +572,36 @@ test("record key selections preserve numeric coercion and both key matches", asy
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+test("record inherited selection names preserve raw runtime errors", async () => {
+  for (const name of [
+    "toString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "toLocaleString",
+  ]) {
+    const source = `
+      import { match, P } from "ts-pattern";
+      export const run = () => match({ a: 1 })
+        .with(P.record(P.string, P.number.select(${JSON.stringify(name)})), (selection) => selection)
+        .otherwise(() => null);
+    `
+    const raw = await evaluate(source, false)
+    const compiled = await evaluate(source, true)
+    await assert.rejects(
+      async () => raw.run(),
+      /concat is not a function/,
+      `${name}: raw ts-pattern reference`,
+    )
+    await assert.rejects(
+      async () => compiled.run(),
+      /concat is not a function/,
+      `${name}: ${compiled.code}`,
+    )
+  }
+})
+
 test("nested record value selections collect selected paths", async () => {
   const code = await assertEquivalent(
     `
