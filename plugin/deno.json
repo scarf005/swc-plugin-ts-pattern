@@ -2,15 +2,20 @@
   "name": "@scarf005/ts-pattern-swc-plugin",
   "version": "0.1.3",
   "license": "AGPL-3.0-only",
+  "fmt": {
+    "semiColons": false,
+    "proseWrap": "never"
+  },
   "exports": {
     ".": "./transform.mjs",
     "./loader": "./loader.mjs",
     "./register": "./register.mjs",
+    "./run": "./run.mjs",
     "./transform": "./transform.mjs"
   },
   "nodeModulesDir": "auto",
   "imports": {
-    "@swc/core": "npm:@swc/core@^1.15.33"
+    "@swc/core": "npm:@swc/core@1.15.33"
   },
   "compilerOptions": {
     "lib": [
@@ -23,9 +28,11 @@
       "README.md",
       "loader.mjs",
       "register.mjs",
+      "run.mjs",
       "transform.mjs",
       "loader.d.ts",
       "register.d.ts",
+      "run.d.ts",
       "transform.d.ts",
       "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin"
     ]

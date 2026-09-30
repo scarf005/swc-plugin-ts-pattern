@@ -3,6 +3,9 @@
   "version": "0.1.3",
   "description": "SWC plugin that compiles supported ts-pattern match expressions into plain JavaScript control flow",
   "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "type": "commonjs",
   "main": "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
   "exports": {
@@ -53,7 +56,7 @@
     "pattern-matching"
   ],
   "dependencies": {
-    "@swc/core": "^1.15.33"
+    "@swc/core": "1.15.33"
   },
   "peerDependencies": {
     "ts-pattern": ">=5.0.0"

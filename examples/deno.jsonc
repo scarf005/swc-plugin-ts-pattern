@@ -11,6 +11,7 @@
     "strict": true
   },
   "imports": {
-    "ts-pattern": "npm:ts-pattern@^5.9.0"
+    "ts-pattern": "npm:ts-pattern@^5.9.0",
+    "@swc/core": "npm:@swc/core@1.15.33"
   }
 }

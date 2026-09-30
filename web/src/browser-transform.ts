@@ -15,9 +15,15 @@ let swcReady: Promise<void> | undefined
 let pluginBytes: Promise<Uint8Array> | undefined
 
 const ensureSwcReady = async () => {
-  swcReady ??= initSwc(
-    new URL("./vendor/swc-binding-core-wasm/wasm_bg.wasm", import.meta.url),
-  ).then(() => undefined)
+  swcReady ??= initSwc({
+    module_or_path: new URL(
+      "./vendor/swc-binding-core-wasm/wasm_bg.wasm",
+      import.meta.url,
+    ),
+  }).then(() => undefined).catch((error) => {
+    swcReady = undefined
+    throw error
+  })
   await swcReady
 }
 
@@ -27,6 +33,9 @@ const getPluginBytes = async () => {
       throw new Error(`Failed to load ${pluginWasmUrl}: ${response.status}`)
     }
     return new Uint8Array(await response.arrayBuffer())
+  }).catch((error) => {
+    pluginBytes = undefined
+    throw error
   })
   return await pluginBytes
 }

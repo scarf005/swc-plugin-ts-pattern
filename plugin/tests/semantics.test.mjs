@@ -372,6 +372,128 @@ test("evaluates later arm arguments after an earlier match", async () => {
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+test("does not replay effectful const pattern initialization", async () => {
+  await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    let calls = 0;
+    const key = () => { calls++; return "value"; };
+    const pattern = { [key()]: 1 };
+    export const run = () => {
+      const result = match({ value: 1 })
+        .with(pattern, () => "matched")
+        .otherwise(() => "other");
+      return [result, calls];
+    };
+  `,
+    ["matched", 1],
+  )
+})
+
+test("does not resolve a const pattern after object mutation", async () => {
+  await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    const pattern = { value: 1 };
+    pattern.value = 2;
+    const input = { value: 2 };
+    export const run = () =>
+      match(input).with(pattern, () => "matched").otherwise(() => "other");
+  `,
+    "matched",
+  )
+})
+
+test("generated globals ignore lexical shadows", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const inputArray = [1];
+      const inputMap = new globalThis.Map([["key", 1]]);
+      const inputSet = new globalThis.Set([1]);
+      const recordInput = { 1: "value" };
+      const Number = Object.assign(() => 0, {
+        isFinite: () => false,
+        isInteger: () => false,
+        isNaN: () => false,
+      });
+      const Array = { isArray: () => false, from: () => [] };
+      const Map = class {};
+      const Set = class {};
+      const Reflect = { ownKeys: () => [] };
+      const undefined = 1;
+      return [
+        match(1).with(P.number.finite(), () => true).otherwise(() => false),
+        match(1).with(P.number.int(), () => true).otherwise(() => false),
+        match(inputArray).with(P.array(), () => true).otherwise(() => false),
+        match(inputMap).with(P.map(), () => true).otherwise(() => false),
+        match(inputSet).with(P.set(), () => true).otherwise(() => false),
+        match(recordInput)
+          .with(P.record(P.number.gt(0), P.string), () => true)
+          .otherwise(() => false),
+        match(recordInput)
+          .with(P.record(P.string, P.string), () => true)
+          .otherwise(() => false),
+        match(1).with(P.nullish, () => true).otherwise(() => false),
+      ];
+    };
+  `,
+    [true, true, true, true, true, true, true, false],
+  )
+})
+
+test("record matching preserves getter reads and key/value evaluation", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const eagerReads = [];
+      const eagerInput = {
+        get first() { eagerReads.push("first"); return "bad"; },
+        get second() { eagerReads.push("second"); return 2; },
+      };
+      const eagerResult = match(eagerInput)
+        .with(P.record(P.string, P.number), () => true)
+        .otherwise(() => false);
+
+      const shortReads = [];
+      const shortInput = {
+        get first() { shortReads.push("first"); return 1; },
+      };
+      const shortResult = match(shortInput)
+        .with(P.record(P.number, P.number), () => true)
+        .otherwise(() => false);
+
+      let selectedReads = 0;
+      const selectedInput = { get value() { return ++selectedReads; } };
+      const selectedResult = match(selectedInput)
+        .with(P.record(P.string, P.number.select()), (values) => values.join(","))
+        .otherwise(() => "");
+
+      const staticInput = { value: 1 };
+      const staticResult = match(staticInput)
+        .with(P.record(P.string, P.number.select()), (values) => values.join(","))
+        .otherwise(() => "");
+
+      let arrowReads = 0;
+      const arrow = (value) => match(value)
+        .with(P.record(P.string, P.number.select()), (values) => values.join(","))
+        .otherwise(() => "");
+      const arrowResult = arrow({ get value() { return ++arrowReads; } });
+      return [
+        [eagerResult, eagerReads],
+        [shortResult, shortReads],
+        [selectedResult, selectedReads],
+        [staticResult, 1],
+        [arrowResult, arrowReads],
+      ];
+    };
+  `,
+    [[false, ["first"]], [false, ["first"]], ["1", 1], ["1", 1], ["1", 1]],
+  )
+})
+
 test("record value getters run before effectful key checks", async () => {
   const code = await assertEquivalent(
     `
@@ -393,11 +515,163 @@ test("record value getters run before effectful key checks", async () => {
       const selected = match(selectedInput)
         .with(P.record(P.string.regex(selectedRegex), P.number.select()), (values) => values)
         .otherwise(() => []);
-      return [[plain, plainEvents], [selected, selectedEvents]];
+      const valueRegex = /a/y;
+      const keyMismatch = match({ a: "a" })
+        .with(P.record(P.number, P.string.regex(valueRegex).select()), () => true)
+        .otherwise(() => false);
+      return [[plain, plainEvents], [selected, selectedEvents], [keyMismatch, valueRegex.lastIndex]];
     };
   `,
-    [[true, [0]], [[0], [0]]],
+    [[true, [0]], [[0], [0]], [false, 1]],
   )
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+test("nested record value selections collect selected paths", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const input = {
+        a: { name: { first: "John", last: "Doe" } },
+        b: { name: { first: "Jane", last: "Doe" } },
+      };
+      return match(input)
+        .with(P.record(P.string, { name: { first: P.string.select() } }), (value) => value)
+        .otherwise(() => "no match");
+    };
+  `,
+    ["John", "Jane"],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("map and set matching preserves iterator short-circuiting", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const mapEvents = [];
+      class TracedMap extends globalThis.Map {
+        entries() {
+          const iterator = super.entries();
+          return {
+            [Symbol.iterator]() { return this; },
+            next() { mapEvents.push("next"); return iterator.next(); },
+          };
+        }
+      }
+      const map = new TracedMap([["first", 1], ["second", 2]]);
+      const mapResult = match(map)
+        .with(P.map(
+          P.when(() => { mapEvents.push("predicate"); return false; }),
+          P.when(() => { mapEvents.push("value"); return true; }),
+        ), () => true)
+        .otherwise(() => false);
+
+      const setEvents = [];
+      class TracedSet extends globalThis.Set {
+        [Symbol.iterator]() {
+          const iterator = super.values();
+          return {
+            [Symbol.iterator]() { return this; },
+            next() { setEvents.push("next"); return iterator.next(); },
+          };
+        }
+      }
+      const set = new TracedSet([1, 2]);
+      const setResult = match(set)
+        .with(P.set(P.when(() => { setEvents.push("predicate"); return false; })), () => true)
+        .otherwise(() => false);
+      return [[mapResult, mapEvents], [setResult, setEvents]];
+    };
+  `,
+    [[false, ["next", "predicate", "value"]], [false, ["next", "predicate"]]],
+  )
+})
+
+test("boolean folding preserves effectful left operands", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let calls = 0;
+      const result = match(1)
+        .with(P.union(P.when(() => { calls++; return false; }), P._), () => true)
+        .otherwise(() => false);
+      return [result, calls];
+    };
+  `,
+    [true, 1],
+  )
+})
+
+test("lambda defaults and destructuring preserve effects", async () => {
+  await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      let defaults = 0;
+      const defaultInput = { value: undefined };
+      const defaultResult = match(defaultInput)
+        .with({ value: undefined }, ({ value = (() => { defaults++; return 2; })() }) => value)
+        .otherwise(() => 0);
+
+      const reads = [];
+      const input = {
+        get a() { reads.push("a"); return 1; },
+        get b() { reads.push("b"); return 2; },
+      };
+      const destructuredResult = match(input)
+        .with({ a: 1, b: 2 }, ({ a, b }) => a + b)
+        .otherwise(() => 0);
+      return [defaultResult, defaults, destructuredResult, reads];
+    };
+  `,
+    [2, 1, 3, ["a", "b", "a", "b"]],
+  )
+})
+
+test("regex patterns preserve raw match behavior", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const regex = /a/g;
+    export const run = () => {
+      const result = match("a")
+        .with(P.string.regex(regex), () => true)
+        .otherwise(() => false);
+      return [result, regex.lastIndex];
+    };
+  `,
+    [true, 0],
+  )
+})
+
+test("type-only error imports do not become runtime bindings", async () => {
+  await assertEquivalent(
+    `
+    import { match, type NonExhaustiveError } from "ts-pattern";
+    export const run = () => {
+      try { return match(1).with(2, () => 2).exhaustive(); }
+      catch (error) { return error.name; }
+    };
+  `,
+    "Error",
+  )
+})
+
+test("failed transforms do not leave speculative error imports", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => ((input) =>
+      match(input)
+        .with({ type: "a" }, () => 1)
+        .with({ type: "b", data: P.array(P.select()) }, () => 2)
+        .exhaustive())({ type: "a" });
+  `,
+    1,
+  )
+  assert.doesNotMatch(code, /NonExhaustiveError/)
+})

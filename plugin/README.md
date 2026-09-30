@@ -11,13 +11,7 @@ const label = match(input)
   .otherwise(() => -1);
 ```
 
-becomes a nested ternary when the input can be safely reused:
-
-```js
-const label = input !== null && typeof input === "object" && "type" in input && input.type === "ok" && "value" in input && typeof input.value === "number" ? input.value : input !== null && typeof input === "object" && "type" in input && input.type === "error" ? 0 : -1;
-```
-
-Arrow-bodied matches are emitted as `switch` statements or `if` blocks when a statement form is faster or preserves single input evaluation.
+The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserving input evaluation and callback arguments. Unsupported chains retain the original ts-pattern runtime.
 
 ## Install
 
@@ -35,35 +29,34 @@ npx jsr add @scarf005/ts-pattern-swc-plugin
 
 ## Configure SWC
 
-```json
-{
-  "jsc": {
-    "experimental": {
-      "plugins": [["@scarf005/ts-pattern-swc-plugin", {}]]
-    }
-  }
-}
+Use `@swc/core@1.15.33`, the runtime matched to this plugin's WASM ABI. Resolve the WASM explicitly rather than using the package root: the JSR/npm bridge root exports the transform API, while native npm archives use a WASM root.
+
+```ts
+import { transform } from "@swc/core";
+import { defaultPluginPath } from "@scarf005/ts-pattern-swc-plugin/transform";
+
+const result = await transform(source, {
+  filename: "input.ts",
+  jsc: {
+    parser: { syntax: "typescript" },
+    experimental: { plugins: [[await defaultPluginPath(), {}]] },
+  },
+});
 ```
 
 ## Run TypeScript directly
 
-The package also ships a Node/Deno loader that compiles `.ts`, `.tsx`, `.mts`, and `.cts` files with the plugin before evaluation.
+The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()` on Node 24+ and Deno 2.9.7+. Remote application modules are not transformed.
 
 ### Node.js
 
-Install the runtime dependencies in your project:
+Install the plugin and ts-pattern:
 
 ```sh
-npm install ts-pattern @scarf005/ts-pattern-swc-plugin @swc/core
+npm install ts-pattern @scarf005/ts-pattern-swc-plugin
 ```
 
-Run an entrypoint through the bundled CLI:
-
-```sh
-npx ts-pattern-swc ./foo.ts
-```
-
-Or preload the loader for regular Node execution:
+Preload the loader:
 
 ```sh
 node --import @scarf005/ts-pattern-swc-plugin/register ./foo.ts
@@ -71,22 +64,26 @@ node --import @scarf005/ts-pattern-swc-plugin/register ./foo.ts
 
 ### Deno
 
-Deno needs a version with `node:module` `register()` loader hooks. Use `import { match } from "ts-pattern"` with a `deno.json` import map, or `import { match } from "npm:ts-pattern"`. Run via npm specifiers:
+Use `import { match } from "ts-pattern"` with a `deno.json` import map, or `import { match } from "npm:ts-pattern@5.9.0"`. Run through the CLI:
 
 ```sh
-deno run -A npm:@scarf005/ts-pattern-swc-plugin/run ./foo.ts
+deno run -A jsr:@scarf005/ts-pattern-swc-plugin/run ./foo.ts
 ```
 
-Or preload the loader:
+The CLI imports the entry as a module. Use preload when your entry relies on native main-module identity (`import.meta.main` or `require.main`).
 
 ```sh
-deno run -A --import npm:@scarf005/ts-pattern-swc-plugin/register ./foo.ts
+deno run -A --preload jsr:@scarf005/ts-pattern-swc-plugin/register ./foo.ts
 ```
 
-For local development from this repository:
+Native JSR imports download the package's WASM into a content-addressed local cache before registering the loader; downloads are limited to 64 MiB, damaged cache files are replaced atomically, and download or transform failures abort execution. This requires network, filesystem and native SWC permissions.
+
+Deno requires explicit extensions for relative imports. Import generated `.cts` modules through their default export, then destructure the exported members; Deno cannot discover the SWC-generated named CommonJS exports during static analysis.
+
+For repository-local development, build with `cd plugin && npm ci && npm run build`, then run from the repository root using the examples import map:
 
 ```sh
-deno run -A --import ./plugin/register.mjs ./foo.ts
+deno run -A --config examples/deno.jsonc --preload ./plugin/register.mjs ./examples/literals.ts
 ```
 
 ### Programmatic transform
@@ -98,7 +95,9 @@ const result = await transformTsPattern(source, { filename: "foo.ts" });
 console.log(result.code);
 ```
 
-Set `TS_PATTERN_SWC_PLUGIN_PATH` when you want to use a custom-built plugin wasm file.
+`defaultPluginPath()` is asynchronous so it can materialize a remote JSR WASM. `transformTsPattern()` prepares it automatically. `transformTsPatternSync()` accepts the same options; for remote imports, first await `defaultPluginPath()` or pass an explicit `pluginPath`.
+
+Set `TS_PATTERN_SWC_PLUGIN_PATH` to use a custom-built WASM with the loader. For programmatic transforms, pass `pluginPath`. Restart the process after rebuilding a custom WASM: SWC caches loaded plugins for the process lifetime.
 
 ## Benchmark
 
@@ -108,7 +107,7 @@ The `bench` task compares [`bdbaraban/ts-pattern-benchmark`](https://github.com/
 
 ```text [just-bench.txt]
 CPU | AMD Ryzen 5 5600G with Radeon Graphics
-Runtime | Deno 2.7.14 (x86_64-unknown-linux-gnu)
+Runtime | Deno 2.9.7 (x86_64-unknown-linux-gnu)
 
 file:///home/scarf/repo/ts-pattern-swc-plugin/web/ts-pattern_bench.ts
 
@@ -116,474 +115,474 @@ file:///home/scarf/repo/ts-pattern-swc-plugin/web/ts-pattern_bench.ts
 | ----------------------- | --------------- | ------------- | --------------------- | -------- | -------- | -------- |
 
 group ts-pattern-benchmark/always-last-digit
-| ts-pattern raw          |        685.1 ns |     1,460,000 | (659.2 ns … 860.0 ns) | 688.4 ns | 860.0 ns | 860.0 ns |
-| native code             |         12.0 ns |    83,090,000 | ( 11.5 ns …  39.4 ns) |  12.0 ns |  14.1 ns |  14.8 ns |
-| ts-pattern swc plugin   |         11.8 ns |    84,610,000 | ( 11.3 ns …  22.8 ns) |  11.7 ns |  13.9 ns |  14.4 ns |
+| ts-pattern raw          |          1.2 µs |       819,400 | (818.3 ns …   1.7 µs) |   1.4 µs |   1.7 µs |   1.7 µs |
+| native code             |         16.9 ns |    59,140,000 | ( 12.2 ns … 135.4 ns) |  21.3 ns |  26.6 ns |  28.5 ns |
+| ts-pattern swc plugin   |         18.4 ns |    54,270,000 | ( 13.0 ns … 298.2 ns) |  22.9 ns |  31.6 ns |  39.8 ns |
 
 summary
   native code
-     1.02x slower than ts-pattern swc plugin
-    56.92x faster than ts-pattern raw
+     1.09x faster than ts-pattern swc plugin
+    72.17x faster than ts-pattern raw
 
 group ts-pattern-benchmark/random-digit
-| ts-pattern raw          |        462.1 ns |     2,164,000 | (439.6 ns … 563.4 ns) | 465.6 ns | 547.6 ns | 563.4 ns |
-| native code             |         12.0 ns |    83,110,000 | ( 10.8 ns …  25.3 ns) |  12.3 ns |  14.1 ns |  17.2 ns |
-| ts-pattern swc plugin   |         18.4 ns |    54,260,000 | ( 17.5 ns …  34.1 ns) |  18.9 ns |  23.7 ns |  27.1 ns |
+| ts-pattern raw          |        792.1 ns |     1,262,000 | (516.8 ns …   1.1 µs) | 889.4 ns |   1.1 µs |   1.1 µs |
+| native code             |         20.9 ns |    47,890,000 | ( 12.4 ns … 223.0 ns) |  23.3 ns |  63.2 ns |  96.1 ns |
+| ts-pattern swc plugin   |         17.8 ns |    56,120,000 | ( 12.9 ns … 233.0 ns) |  21.4 ns |  33.1 ns |  42.9 ns |
 
 summary
   native code
-     1.53x faster than ts-pattern swc plugin
-    38.40x faster than ts-pattern raw
+     1.17x slower than ts-pattern swc plugin
+    37.93x faster than ts-pattern raw
 
 group ts-pattern-benchmark/nested-objects
-| ts-pattern raw          |          1.8 µs |       565,000 | (  1.7 µs …   1.9 µs) |   1.8 µs |   1.9 µs |   1.9 µs |
-| native code             |         15.2 ns |    65,720,000 | ( 14.4 ns …  67.9 ns) |  15.2 ns |  18.9 ns |  21.3 ns |
-| ts-pattern swc plugin   |         15.4 ns |    64,840,000 | ( 14.3 ns …  30.5 ns) |  15.3 ns |  22.8 ns |  28.4 ns |
+| ts-pattern raw          |          2.4 µs |       416,100 | (  2.0 µs …   2.9 µs) |   2.6 µs |   2.9 µs |   2.9 µs |
+| native code             |         22.1 ns |    45,190,000 | ( 15.6 ns … 251.1 ns) |  27.4 ns |  38.2 ns |  43.8 ns |
+| ts-pattern swc plugin   |         20.7 ns |    48,400,000 | ( 13.5 ns … 328.6 ns) |  25.5 ns |  48.2 ns |  76.7 ns |
 
 summary
   native code
-     1.01x faster than ts-pattern swc plugin
-   116.30x faster than ts-pattern raw
+     1.07x slower than ts-pattern swc plugin
+   108.60x faster than ts-pattern raw
 
 group intro-html
-| ts-pattern raw          |          1.5 µs |       658,900 | (  1.5 µs …   1.6 µs) |   1.5 µs |   1.6 µs |   1.6 µs |
-| ts-pattern swc plugin   |         94.6 ns |    10,570,000 | ( 90.1 ns … 137.9 ns) |  95.1 ns | 114.7 ns | 116.5 ns |
+| ts-pattern raw          |          2.1 µs |       468,000 | (  1.7 µs …   2.7 µs) |   2.3 µs |   2.7 µs |   2.7 µs |
+| ts-pattern swc plugin   |         67.4 ns |    14,830,000 | ( 51.7 ns … 143.3 ns) |  73.8 ns | 115.9 ns | 121.1 ns |
 
 summary
   ts-pattern swc plugin
-    16.05x faster than ts-pattern raw
+    31.69x faster than ts-pattern raw
 
 group is-matching-curried
-| ts-pattern raw          |        358.9 ns |     2,787,000 | (351.3 ns … 386.6 ns) | 364.1 ns | 383.8 ns | 386.6 ns |
-| ts-pattern swc plugin   |        364.8 ns |     2,741,000 | (346.3 ns … 407.0 ns) | 370.5 ns | 392.2 ns | 407.0 ns |
+| ts-pattern raw          |        504.5 ns |     1,982,000 | (378.4 ns … 771.1 ns) | 565.9 ns | 736.0 ns | 771.1 ns |
+| ts-pattern swc plugin   |        470.2 ns |     2,127,000 | (372.6 ns … 793.5 ns) | 501.3 ns | 726.8 ns | 793.5 ns |
 
 summary
   ts-pattern swc plugin
-     1.02x slower than ts-pattern raw
+     1.07x faster than ts-pattern raw
 
 group is-matching-direct
-| ts-pattern raw          |        348.0 ns |     2,873,000 | (336.6 ns … 377.1 ns) | 351.9 ns | 375.6 ns | 377.1 ns |
-| ts-pattern swc plugin   |        347.0 ns |     2,881,000 | (337.1 ns … 374.6 ns) | 353.0 ns | 372.1 ns | 374.6 ns |
+| ts-pattern raw          |        546.9 ns |     1,829,000 | (366.4 ns … 860.9 ns) | 626.2 ns | 822.6 ns | 860.9 ns |
+| ts-pattern swc plugin   |        571.9 ns |     1,749,000 | (383.6 ns … 999.5 ns) | 634.1 ns | 999.5 ns | 999.5 ns |
 
 summary
   ts-pattern swc plugin
-     1.00x faster than ts-pattern raw
+     1.05x slower than ts-pattern raw
 
 group literals
-| ts-pattern raw          |        346.3 ns |     2,888,000 | (326.7 ns … 508.0 ns) | 349.0 ns | 501.9 ns | 508.0 ns |
-| ts-pattern swc plugin   |         16.7 ns |    59,760,000 | ( 15.8 ns …  32.8 ns) |  16.8 ns |  20.1 ns |  22.6 ns |
+| ts-pattern raw          |        617.5 ns |     1,619,000 | (406.3 ns …   1.1 µs) | 706.5 ns |   1.1 µs |   1.1 µs |
+| ts-pattern swc plugin   |         23.5 ns |    42,640,000 | ( 16.8 ns …  68.4 ns) |  29.6 ns |  43.4 ns |  46.1 ns |
 
 summary
   ts-pattern swc plugin
-    20.69x faster than ts-pattern raw
+    26.33x faster than ts-pattern raw
 
 group matching-several-patterns
-| ts-pattern raw          |        355.0 ns |     2,817,000 | (337.2 ns … 399.1 ns) | 359.4 ns | 397.8 ns | 399.1 ns |
-| ts-pattern swc plugin   |         20.5 ns |    48,780,000 | ( 19.5 ns …  42.3 ns) |  20.5 ns |  25.5 ns |  30.9 ns |
+| ts-pattern raw          |        670.9 ns |     1,490,000 | (392.3 ns …   1.6 µs) | 740.5 ns |   1.6 µs |   1.6 µs |
+| ts-pattern swc plugin   |         33.3 ns |    30,040,000 | ( 21.0 ns … 158.1 ns) |  40.1 ns |  60.1 ns |  69.2 ns |
 
 summary
   ts-pattern swc plugin
-    17.32x faster than ts-pattern raw
+    20.16x faster than ts-pattern raw
 
 group objects
-| ts-pattern raw          |        640.4 ns |     1,561,000 | (608.9 ns … 935.6 ns) | 640.1 ns | 935.6 ns | 935.6 ns |
-| ts-pattern swc plugin   |         49.5 ns |    20,190,000 | ( 46.9 ns …  70.0 ns) |  50.2 ns |  60.2 ns |  67.1 ns |
+| ts-pattern raw          |          1.0 µs |       967,400 | (741.3 ns …   1.5 µs) |   1.1 µs |   1.5 µs |   1.5 µs |
+| ts-pattern swc plugin   |         93.2 ns |    10,730,000 | ( 37.6 ns … 674.0 ns) |  87.2 ns | 372.8 ns | 461.7 ns |
 
 summary
   ts-pattern swc plugin
-    12.93x faster than ts-pattern raw
+    11.09x faster than ts-pattern raw
 
 group p-array-patterns
-| ts-pattern raw          |          1.3 µs |       793,300 | (  1.2 µs …   1.4 µs) |   1.3 µs |   1.4 µs |   1.4 µs |
-| ts-pattern swc plugin   |         30.8 ns |    32,490,000 | ( 29.1 ns …  50.7 ns) |  30.7 ns |  43.1 ns |  45.2 ns |
+| ts-pattern raw          |          2.2 µs |       451,300 | (  1.4 µs …   3.6 µs) |   2.4 µs |   3.6 µs |   3.6 µs |
+| ts-pattern swc plugin   |         44.0 ns |    22,720,000 | ( 26.7 ns … 217.0 ns) |  52.0 ns |  89.3 ns | 103.5 ns |
 
 summary
   ts-pattern swc plugin
-    40.96x faster than ts-pattern raw
+    50.34x faster than ts-pattern raw
 
 group p-bigint-wildcard
-| ts-pattern raw          |         82.1 ns |    12,170,000 | ( 74.6 ns … 147.5 ns) |  84.3 ns | 130.1 ns | 139.0 ns |
-| ts-pattern swc plugin   |         11.8 ns |    84,650,000 | ( 11.2 ns …  38.1 ns) |  11.9 ns |  15.7 ns |  19.2 ns |
+| ts-pattern raw          |        162.6 ns |     6,150,000 | ( 83.9 ns … 559.7 ns) | 181.9 ns | 439.1 ns | 498.0 ns |
+| ts-pattern swc plugin   |         18.2 ns |    54,880,000 | ( 12.1 ns … 127.7 ns) |  22.2 ns |  32.7 ns |  35.8 ns |
 
 summary
   ts-pattern swc plugin
-     6.95x faster than ts-pattern raw
+     8.92x faster than ts-pattern raw
 
 group p-boolean-wildcard
-| ts-pattern raw          |        186.8 ns |     5,353,000 | (172.6 ns … 326.0 ns) | 188.5 ns | 294.2 ns | 317.8 ns |
-| ts-pattern swc plugin   |         11.2 ns |    89,060,000 | ( 10.6 ns …  23.5 ns) |  11.1 ns |  14.9 ns |  17.4 ns |
+| ts-pattern raw          |        369.2 ns |     2,708,000 | (201.3 ns … 629.2 ns) | 421.4 ns | 590.2 ns | 629.2 ns |
+| ts-pattern swc plugin   |         22.1 ns |    45,310,000 | ( 11.7 ns … 403.4 ns) |  23.8 ns |  90.3 ns | 155.1 ns |
 
 summary
   ts-pattern swc plugin
-    16.64x faster than ts-pattern raw
+    16.73x faster than ts-pattern raw
 
 group p-infer
-| ts-pattern raw          |          1.6 µs |       635,000 | (  1.5 µs …   1.7 µs) |   1.6 µs |   1.7 µs |   1.7 µs |
-| ts-pattern swc plugin   |          1.6 µs |       635,400 | (  1.6 µs …   1.7 µs) |   1.6 µs |   1.7 µs |   1.7 µs |
-
-summary
-  ts-pattern swc plugin
-     1.00x faster than ts-pattern raw
-
-group p-instanceof-patterns
-| ts-pattern raw          |          1.2 µs |       823,600 | (  1.2 µs …   1.6 µs) |   1.2 µs |   1.6 µs |   1.6 µs |
-| ts-pattern swc plugin   |         26.9 ns |    37,150,000 | ( 25.8 ns …  69.5 ns) |  27.0 ns |  32.4 ns |  35.3 ns |
-
-summary
-  ts-pattern swc plugin
-    45.11x faster than ts-pattern raw
-
-group p-intersection-patterns
-| ts-pattern raw          |          2.3 µs |       437,500 | (  2.3 µs …   2.4 µs) |   2.3 µs |   2.4 µs |   2.4 µs |
-| ts-pattern swc plugin   |         49.1 ns |    20,350,000 | ( 47.0 ns …  97.1 ns) |  48.8 ns |  70.4 ns |  82.2 ns |
-
-summary
-  ts-pattern swc plugin
-    46.52x faster than ts-pattern raw
-
-group p-map-patterns
-| ts-pattern raw          |          1.8 µs |       567,900 | (  1.7 µs …   2.0 µs) |   1.8 µs |   2.0 µs |   2.0 µs |
-| ts-pattern swc plugin   |        263.9 ns |     3,789,000 | (253.7 ns … 293.0 ns) | 264.1 ns | 282.9 ns | 283.0 ns |
-
-summary
-  ts-pattern swc plugin
-     6.67x faster than ts-pattern raw
-
-group p-narrow
-| ts-pattern raw          |        414.9 ns |     2,410,000 | (396.9 ns … 477.9 ns) | 421.9 ns | 469.0 ns | 477.9 ns |
-| ts-pattern swc plugin   |        117.1 ns |     8,538,000 | (113.2 ns … 136.3 ns) | 117.6 ns | 135.2 ns | 135.6 ns |
-
-summary
-  ts-pattern swc plugin
-     3.54x faster than ts-pattern raw
-
-group p-nonnullable-wildcard
-| ts-pattern raw          |         90.1 ns |    11,090,000 | ( 83.1 ns … 211.3 ns) |  91.8 ns | 125.7 ns | 134.4 ns |
-| ts-pattern swc plugin   |         11.2 ns |    89,250,000 | ( 10.5 ns …  20.3 ns) |  11.3 ns |  13.7 ns |  15.0 ns |
-
-summary
-  ts-pattern swc plugin
-     8.04x faster than ts-pattern raw
-
-group p-not-patterns
-| ts-pattern raw          |        570.0 ns |     1,754,000 | (548.4 ns … 686.2 ns) | 574.4 ns | 686.2 ns | 686.2 ns |
-| ts-pattern swc plugin   |         11.5 ns |    86,910,000 | ( 10.4 ns …  37.9 ns) |  11.8 ns |  13.9 ns |  15.1 ns |
-
-summary
-  ts-pattern swc plugin
-    49.54x faster than ts-pattern raw
-
-group p-nullish-wildcard
-| ts-pattern raw          |        128.8 ns |     7,763,000 | (118.3 ns … 217.8 ns) | 131.8 ns | 199.8 ns | 212.3 ns |
-| ts-pattern swc plugin   |         11.0 ns |    90,790,000 | ( 10.1 ns …  33.0 ns) |  10.7 ns |  21.5 ns |  22.2 ns |
-
-summary
-  ts-pattern swc plugin
-    11.70x faster than ts-pattern raw
-
-group p-number-between
-| ts-pattern raw          |        947.9 ns |     1,055,000 | (921.7 ns …   1.1 µs) | 958.8 ns |   1.1 µs |   1.1 µs |
-| ts-pattern swc plugin   |         12.4 ns |    80,750,000 | ( 11.6 ns …  40.1 ns) |  12.6 ns |  15.4 ns |  17.5 ns |
-
-summary
-  ts-pattern swc plugin
-    76.54x faster than ts-pattern raw
-
-group p-number-finite
-| ts-pattern raw          |        930.3 ns |     1,075,000 | (911.9 ns … 999.0 ns) | 933.9 ns | 999.0 ns | 999.0 ns |
-| ts-pattern swc plugin   |         11.1 ns |    89,760,000 | ( 10.5 ns …  36.2 ns) |  11.0 ns |  12.8 ns |  13.3 ns |
-
-summary
-  ts-pattern swc plugin
-    83.51x faster than ts-pattern raw
-
-group p-number-gt
-| ts-pattern raw          |        939.8 ns |     1,064,000 | (921.1 ns …   1.0 µs) | 940.3 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         12.5 ns |    80,240,000 | ( 11.5 ns …  30.4 ns) |  12.5 ns |  14.5 ns |  16.1 ns |
-
-summary
-  ts-pattern swc plugin
-    75.41x faster than ts-pattern raw
-
-group p-number-gte
-| ts-pattern raw          |        978.6 ns |     1,022,000 | (946.9 ns …   1.1 µs) | 986.8 ns |   1.1 µs |   1.1 µs |
-| ts-pattern swc plugin   |         12.5 ns |    79,820,000 | ( 11.8 ns …  28.8 ns) |  12.5 ns |  14.6 ns |  15.4 ns |
-
-summary
-  ts-pattern swc plugin
-    78.11x faster than ts-pattern raw
-
-group p-number-int
-| ts-pattern raw          |        925.3 ns |     1,081,000 | (907.6 ns …   1.0 µs) | 927.2 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         12.1 ns |    82,480,000 | ( 11.1 ns …  34.4 ns) |  12.4 ns |  13.7 ns |  14.6 ns |
-
-summary
-  ts-pattern swc plugin
-    76.32x faster than ts-pattern raw
-
-group p-number-lt
-| ts-pattern raw          |        938.2 ns |     1,066,000 | (914.3 ns …   1.0 µs) | 942.0 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         13.2 ns |    75,580,000 | ( 12.8 ns …  29.5 ns) |  13.2 ns |  14.9 ns |  15.2 ns |
-
-summary
-  ts-pattern swc plugin
-    70.91x faster than ts-pattern raw
-
-group p-number-lte
-| ts-pattern raw          |        946.0 ns |     1,057,000 | (920.5 ns …   1.0 µs) | 950.4 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         11.9 ns |    83,900,000 | ( 11.0 ns …  27.4 ns) |  12.2 ns |  13.6 ns |  13.8 ns |
-
-summary
-  ts-pattern swc plugin
-    79.37x faster than ts-pattern raw
-
-group p-number-negative
-| ts-pattern raw          |        943.3 ns |     1,060,000 | (923.0 ns … 998.0 ns) | 947.1 ns | 998.0 ns | 998.0 ns |
-| ts-pattern swc plugin   |         11.6 ns |    85,950,000 | ( 10.8 ns …  38.7 ns) |  11.7 ns |  13.5 ns |  13.9 ns |
-
-summary
-  ts-pattern swc plugin
-    81.08x faster than ts-pattern raw
-
-group p-number-positive
-| ts-pattern raw          |        938.5 ns |     1,066,000 | (922.8 ns …   1.0 µs) | 939.5 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         11.4 ns |    87,410,000 | ( 10.6 ns …  26.0 ns) |  11.6 ns |  16.9 ns |  18.8 ns |
-
-summary
-  ts-pattern swc plugin
-    82.03x faster than ts-pattern raw
-
-group p-number-wildcard
-| ts-pattern raw          |        138.6 ns |     7,214,000 | (127.5 ns … 185.5 ns) | 142.8 ns | 168.9 ns | 173.8 ns |
-| ts-pattern swc plugin   |         11.7 ns |    85,830,000 | ( 10.6 ns …  23.6 ns) |  11.9 ns |  17.6 ns |  19.7 ns |
-
-summary
-  ts-pattern swc plugin
-    11.90x faster than ts-pattern raw
-
-group p-optional-patterns
-| ts-pattern raw          |          1.2 µs |       802,400 | (  1.2 µs …   1.4 µs) |   1.3 µs |   1.4 µs |   1.4 µs |
-| ts-pattern swc plugin   |         29.3 ns |    34,140,000 | ( 28.0 ns …  49.6 ns) |  29.4 ns |  32.5 ns |  34.2 ns |
-
-summary
-  ts-pattern swc plugin
-    42.54x faster than ts-pattern raw
-
-group p-pattern
-| ts-pattern raw          |        248.2 ns |     4,029,000 | (235.6 ns … 394.7 ns) | 253.6 ns | 301.1 ns | 312.4 ns |
-| ts-pattern swc plugin   |        248.3 ns |     4,028,000 | (237.4 ns … 333.1 ns) | 253.0 ns | 280.4 ns | 287.2 ns |
+| ts-pattern raw          |          3.4 µs |       294,900 | (  2.4 µs …   5.7 µs) |   3.7 µs |   5.7 µs |   5.7 µs |
+| ts-pattern swc plugin   |          3.4 µs |       293,900 | (  2.4 µs …   5.5 µs) |   3.6 µs |   5.5 µs |   5.5 µs |
 
 summary
   ts-pattern swc plugin
      1.00x slower than ts-pattern raw
 
-group p-record-profiles
-| ts-pattern raw          |          1.3 µs |       747,400 | (  1.3 µs …   1.5 µs) |   1.4 µs |   1.5 µs |   1.5 µs |
-| ts-pattern swc plugin   |        180.8 ns |     5,532,000 | (171.5 ns … 232.8 ns) | 185.0 ns | 209.2 ns | 213.8 ns |
+group p-instanceof-patterns
+| ts-pattern raw          |          3.1 µs |       323,400 | (  2.2 µs …   6.0 µs) |   3.3 µs |   6.0 µs |   6.0 µs |
+| ts-pattern swc plugin   |         53.1 ns |    18,820,000 | ( 25.1 ns … 490.8 ns) |  51.1 ns | 201.7 ns | 273.2 ns |
 
 summary
   ts-pattern swc plugin
-     7.40x faster than ts-pattern raw
+    58.19x faster than ts-pattern raw
+
+group p-intersection-patterns
+| ts-pattern raw          |          5.1 µs |       196,000 | (  4.2 µs …   7.0 µs) |   5.9 µs |   7.0 µs |   7.0 µs |
+| ts-pattern swc plugin   |         74.8 ns |    13,370,000 | ( 33.2 ns … 489.1 ns) |  73.7 ns | 237.5 ns | 284.3 ns |
+
+summary
+  ts-pattern swc plugin
+    68.24x faster than ts-pattern raw
+
+group p-map-patterns
+| ts-pattern raw          |          3.9 µs |       256,100 | (  2.8 µs …   5.6 µs) |   4.4 µs |   5.6 µs |   5.6 µs |
+| ts-pattern swc plugin   |         66.5 ns |    15,040,000 | ( 27.4 ns …   1.1 µs) |  62.4 ns | 342.4 ns | 424.7 ns |
+
+summary
+  ts-pattern swc plugin
+    58.74x faster than ts-pattern raw
+
+group p-narrow
+| ts-pattern raw          |        745.7 ns |     1,341,000 | (493.3 ns …   1.4 µs) | 818.2 ns |   1.4 µs |   1.4 µs |
+| ts-pattern swc plugin   |        220.8 ns |     4,528,000 | (124.3 ns … 533.7 ns) | 256.4 ns | 482.3 ns | 484.8 ns |
+
+summary
+  ts-pattern swc plugin
+     3.38x faster than ts-pattern raw
+
+group p-nonnullable-wildcard
+| ts-pattern raw          |        186.1 ns |     5,375,000 | ( 94.8 ns … 514.7 ns) | 199.5 ns | 413.8 ns | 459.5 ns |
+| ts-pattern swc plugin   |         24.9 ns |    40,200,000 | ( 11.4 ns … 321.7 ns) |  22.4 ns | 124.3 ns | 166.4 ns |
+
+summary
+  ts-pattern swc plugin
+     7.48x faster than ts-pattern raw
+
+group p-not-patterns
+| ts-pattern raw          |          1.1 µs |       896,300 | (659.1 ns …   1.7 µs) |   1.2 µs |   1.7 µs |   1.7 µs |
+| ts-pattern swc plugin   |         19.7 ns |    50,830,000 | ( 11.4 ns … 136.8 ns) |  22.0 ns |  42.6 ns |  53.8 ns |
+
+summary
+  ts-pattern swc plugin
+    56.71x faster than ts-pattern raw
+
+group p-nullish-wildcard
+| ts-pattern raw          |        270.8 ns |     3,693,000 | (154.7 ns … 500.8 ns) | 299.5 ns | 481.4 ns | 500.8 ns |
+| ts-pattern swc plugin   |         20.8 ns |    48,050,000 | ( 11.2 ns … 351.7 ns) |  22.5 ns |  84.8 ns | 162.0 ns |
+
+summary
+  ts-pattern swc plugin
+    13.01x faster than ts-pattern raw
+
+group p-number-between
+| ts-pattern raw          |          1.7 µs |       601,000 | (  1.2 µs …   2.4 µs) |   1.8 µs |   2.4 µs |   2.4 µs |
+| ts-pattern swc plugin   |         24.3 ns |    41,110,000 | ( 12.5 ns … 190.1 ns) |  24.1 ns |  92.8 ns | 128.4 ns |
+
+summary
+  ts-pattern swc plugin
+    68.41x faster than ts-pattern raw
+
+group p-number-finite
+| ts-pattern raw          |          2.2 µs |       460,700 | (  1.4 µs …   4.7 µs) |   2.4 µs |   4.7 µs |   4.7 µs |
+| ts-pattern swc plugin   |         32.3 ns |    30,950,000 | ( 11.6 ns … 915.3 ns) |  23.3 ns | 310.2 ns | 389.7 ns |
+
+summary
+  ts-pattern swc plugin
+    67.18x faster than ts-pattern raw
+
+group p-number-gt
+| ts-pattern raw          |          2.0 µs |       503,100 | (  1.2 µs …   2.9 µs) |   2.1 µs |   2.9 µs |   2.9 µs |
+| ts-pattern swc plugin   |         20.8 ns |    48,080,000 | ( 12.0 ns … 206.7 ns) |  22.9 ns |  54.7 ns |  86.3 ns |
+
+summary
+  ts-pattern swc plugin
+    95.56x faster than ts-pattern raw
+
+group p-number-gte
+| ts-pattern raw          |          1.8 µs |       558,000 | (  1.2 µs …   2.3 µs) |   2.0 µs |   2.3 µs |   2.3 µs |
+| ts-pattern swc plugin   |         17.6 ns |    56,900,000 | ( 11.9 ns … 153.7 ns) |  22.1 ns |  32.9 ns |  38.6 ns |
+
+summary
+  ts-pattern swc plugin
+   102.00x faster than ts-pattern raw
+
+group p-number-int
+| ts-pattern raw          |          1.6 µs |       640,500 | (  1.1 µs …   2.4 µs) |   1.7 µs |   2.4 µs |   2.4 µs |
+| ts-pattern swc plugin   |         20.3 ns |    49,350,000 | ( 11.7 ns … 526.3 ns) |  22.9 ns |  39.4 ns |  48.7 ns |
+
+summary
+  ts-pattern swc plugin
+    77.04x faster than ts-pattern raw
+
+group p-number-lt
+| ts-pattern raw          |          1.6 µs |       610,200 | (  1.1 µs …   3.3 µs) |   1.9 µs |   3.3 µs |   3.3 µs |
+| ts-pattern swc plugin   |         19.4 ns |    51,540,000 | ( 12.0 ns … 405.3 ns) |  22.5 ns |  42.1 ns |  65.4 ns |
+
+summary
+  ts-pattern swc plugin
+    84.47x faster than ts-pattern raw
+
+group p-number-lte
+| ts-pattern raw          |          1.7 µs |       586,200 | (  1.2 µs …   2.3 µs) |   1.9 µs |   2.3 µs |   2.3 µs |
+| ts-pattern swc plugin   |         21.4 ns |    46,790,000 | ( 11.8 ns … 431.7 ns) |  23.0 ns |  61.9 ns |  87.3 ns |
+
+summary
+  ts-pattern swc plugin
+    79.83x faster than ts-pattern raw
+
+group p-number-negative
+| ts-pattern raw          |          1.9 µs |       522,000 | (  1.1 µs …   2.6 µs) |   2.1 µs |   2.6 µs |   2.6 µs |
+| ts-pattern swc plugin   |         20.8 ns |    47,970,000 | ( 11.5 ns … 310.4 ns) |  22.3 ns |  83.9 ns | 128.2 ns |
+
+summary
+  ts-pattern swc plugin
+    91.90x faster than ts-pattern raw
+
+group p-number-positive
+| ts-pattern raw          |          1.6 µs |       606,200 | (  1.1 µs …   2.3 µs) |   1.8 µs |   2.3 µs |   2.3 µs |
+| ts-pattern swc plugin   |         17.8 ns |    56,070,000 | ( 11.6 ns … 310.6 ns) |  21.9 ns |  24.7 ns |  25.7 ns |
+
+summary
+  ts-pattern swc plugin
+    92.50x faster than ts-pattern raw
+
+group p-number-wildcard
+| ts-pattern raw          |        248.6 ns |     4,022,000 | (139.0 ns … 795.6 ns) | 279.6 ns | 544.9 ns | 643.9 ns |
+| ts-pattern swc plugin   |         15.1 ns |    66,280,000 | ( 11.5 ns …  90.9 ns) |  18.1 ns |  24.8 ns |  25.3 ns |
+
+summary
+  ts-pattern swc plugin
+    16.48x faster than ts-pattern raw
+
+group p-optional-patterns
+| ts-pattern raw          |          1.8 µs |       557,500 | (  1.4 µs …   3.0 µs) |   1.9 µs |   3.0 µs |   3.0 µs |
+| ts-pattern swc plugin   |         39.3 ns |    25,410,000 | ( 24.6 ns … 110.3 ns) |  46.8 ns |  72.0 ns |  83.6 ns |
+
+summary
+  ts-pattern swc plugin
+    45.58x faster than ts-pattern raw
+
+group p-pattern
+| ts-pattern raw          |        373.7 ns |     2,676,000 | (252.3 ns … 600.4 ns) | 424.7 ns | 575.5 ns | 600.4 ns |
+| ts-pattern swc plugin   |        373.3 ns |     2,679,000 | (252.9 ns … 668.8 ns) | 427.1 ns | 593.7 ns | 668.8 ns |
+
+summary
+  ts-pattern swc plugin
+     1.00x faster than ts-pattern raw
+
+group p-record-profiles
+| ts-pattern raw          |          2.1 µs |       469,900 | (  1.5 µs …   2.9 µs) |   2.4 µs |   2.9 µs |   2.9 µs |
+| ts-pattern swc plugin   |        327.8 ns |     3,050,000 | (204.0 ns … 775.4 ns) | 372.8 ns | 525.7 ns | 775.4 ns |
+
+summary
+  ts-pattern swc plugin
+     6.49x faster than ts-pattern raw
 
 group p-record-scores
-| ts-pattern raw          |          1.6 µs |       633,200 | (  1.5 µs …   1.7 µs) |   1.6 µs |   1.7 µs |   1.7 µs |
-| ts-pattern swc plugin   |        233.3 ns |     4,286,000 | (223.7 ns … 272.3 ns) | 237.2 ns | 261.2 ns | 268.4 ns |
+| ts-pattern raw          |          2.3 µs |       435,600 | (  1.7 µs …   3.1 µs) |   2.5 µs |   3.1 µs |   3.1 µs |
+| ts-pattern swc plugin   |        495.6 ns |     2,018,000 | (344.5 ns … 719.3 ns) | 573.6 ns | 716.5 ns | 719.3 ns |
 
 summary
   ts-pattern swc plugin
-     6.77x faster than ts-pattern raw
+     4.63x faster than ts-pattern raw
 
 group p-record-select
-| ts-pattern raw          |          4.3 µs |       232,600 | (  4.2 µs …   4.4 µs) |   4.4 µs |   4.4 µs |   4.4 µs |
-| ts-pattern swc plugin   |        444.3 ns |     2,251,000 | (425.3 ns … 574.4 ns) | 451.8 ns | 484.4 ns | 574.4 ns |
+| ts-pattern raw          |          8.5 µs |       117,500 | (  2.7 µs …   7.5 ms) |   9.8 µs |  21.2 µs |  25.2 µs |
+| ts-pattern swc plugin   |          1.3 µs |       768,900 | (828.2 ns …   1.7 µs) |   1.4 µs |   1.7 µs |   1.7 µs |
 
 summary
   ts-pattern swc plugin
-     9.68x faster than ts-pattern raw
+     6.54x faster than ts-pattern raw
 
 group p-select-anonymous
-| ts-pattern raw          |        971.2 ns |     1,030,000 | (931.9 ns …   1.2 µs) | 972.4 ns |   1.2 µs |   1.2 µs |
-| ts-pattern swc plugin   |         42.6 ns |    23,470,000 | ( 40.1 ns …  80.1 ns) |  43.2 ns |  50.1 ns |  57.7 ns |
+| ts-pattern raw          |          1.6 µs |       612,500 | (  1.2 µs …   2.3 µs) |   1.7 µs |   2.3 µs |   2.3 µs |
+| ts-pattern swc plugin   |         47.1 ns |    21,220,000 | ( 34.3 ns … 122.5 ns) |  55.5 ns |  81.7 ns |  88.7 ns |
 
 summary
   ts-pattern swc plugin
-    22.79x faster than ts-pattern raw
+    34.64x faster than ts-pattern raw
 
 group p-select-guarded
-| ts-pattern raw          |          3.8 µs |       260,400 | (  3.8 µs …   4.1 µs) |   3.9 µs |   4.1 µs |   4.1 µs |
-| ts-pattern swc plugin   |         82.4 ns |    12,140,000 | ( 78.2 ns … 108.7 ns) |  82.9 ns |  97.0 ns |  98.5 ns |
+| ts-pattern raw          |          6.4 µs |       156,800 | (  4.5 µs …   8.5 µs) |   7.4 µs |   8.5 µs |   8.5 µs |
+| ts-pattern swc plugin   |         62.7 ns |    15,950,000 | ( 38.1 ns … 364.7 ns) |  74.0 ns | 176.7 ns | 219.9 ns |
 
 summary
   ts-pattern swc plugin
-    46.61x faster than ts-pattern raw
+   101.70x faster than ts-pattern raw
 
 group p-select-named
-| ts-pattern raw          |          1.4 µs |       691,300 | (  1.4 µs …   1.5 µs) |   1.5 µs |   1.5 µs |   1.5 µs |
-| ts-pattern swc plugin   |         77.2 ns |    12,950,000 | ( 74.0 ns … 112.4 ns) |  77.1 ns |  94.3 ns |  96.7 ns |
+| ts-pattern raw          |          2.4 µs |       423,000 | (  1.8 µs …   4.2 µs) |   2.5 µs |   4.2 µs |   4.2 µs |
+| ts-pattern swc plugin   |        101.0 ns |     9,902,000 | ( 64.4 ns … 443.3 ns) | 119.7 ns | 186.1 ns | 248.0 ns |
 
 summary
   ts-pattern swc plugin
-    18.73x faster than ts-pattern raw
+    23.41x faster than ts-pattern raw
 
 group p-set-patterns
-| ts-pattern raw          |          1.4 µs |       720,300 | (  1.4 µs …   1.5 µs) |   1.4 µs |   1.5 µs |   1.5 µs |
-| ts-pattern swc plugin   |         27.4 ns |    36,460,000 | ( 25.2 ns …  61.4 ns) |  26.9 ns |  52.8 ns |  54.1 ns |
+| ts-pattern raw          |          2.9 µs |       340,100 | (  2.4 µs …   5.8 µs) |   3.0 µs |   5.8 µs |   5.8 µs |
+| ts-pattern swc plugin   |         43.5 ns |    23,010,000 | ( 22.5 ns … 732.5 ns) |  45.0 ns | 138.4 ns | 231.9 ns |
 
 summary
   ts-pattern swc plugin
-    50.62x faster than ts-pattern raw
+    67.65x faster than ts-pattern raw
 
 group p-string-endswith
-| ts-pattern raw          |        915.6 ns |     1,092,000 | (888.9 ns …   1.0 µs) | 919.2 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         12.4 ns |    80,330,000 | ( 11.6 ns …  30.4 ns) |  12.4 ns |  14.6 ns |  15.1 ns |
+| ts-pattern raw          |          1.7 µs |       573,200 | (  1.1 µs …   3.7 µs) |   1.9 µs |   3.7 µs |   3.7 µs |
+| ts-pattern swc plugin   |         20.9 ns |    47,880,000 | ( 12.7 ns … 390.3 ns) |  24.1 ns |  59.0 ns |  82.5 ns |
 
 summary
   ts-pattern swc plugin
-    73.55x faster than ts-pattern raw
+    83.53x faster than ts-pattern raw
 
 group p-string-includes
-| ts-pattern raw          |        915.8 ns |     1,092,000 | (889.2 ns … 998.5 ns) | 916.0 ns | 998.5 ns | 998.5 ns |
-| ts-pattern swc plugin   |         14.6 ns |    68,260,000 | ( 13.4 ns …  29.8 ns) |  15.1 ns |  17.2 ns |  18.5 ns |
+| ts-pattern raw          |          1.2 µs |       806,200 | (933.2 ns …   1.7 µs) |   1.4 µs |   1.7 µs |   1.7 µs |
+| ts-pattern swc plugin   |         19.0 ns |    52,660,000 | ( 14.7 ns …  32.7 ns) |  21.4 ns |  30.2 ns |  30.7 ns |
 
 summary
   ts-pattern swc plugin
-    62.51x faster than ts-pattern raw
+    65.32x faster than ts-pattern raw
 
 group p-string-length
-| ts-pattern raw          |        924.4 ns |     1,082,000 | (881.5 ns …   1.0 µs) | 940.9 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         12.4 ns |    80,630,000 | ( 12.0 ns …  18.0 ns) |  12.5 ns |  13.0 ns |  13.7 ns |
+| ts-pattern raw          |          1.2 µs |       809,600 | (923.7 ns …   2.5 µs) |   1.3 µs |   2.5 µs |   2.5 µs |
+| ts-pattern swc plugin   |         15.2 ns |    65,730,000 | ( 12.2 ns …  46.7 ns) |  16.6 ns |  24.7 ns |  25.2 ns |
 
 summary
   ts-pattern swc plugin
-    74.53x faster than ts-pattern raw
+    81.18x faster than ts-pattern raw
 
 group p-string-maxlength
-| ts-pattern raw          |        892.9 ns |     1,120,000 | (873.6 ns … 971.5 ns) | 896.2 ns | 971.5 ns | 971.5 ns |
-| ts-pattern swc plugin   |         12.0 ns |    83,290,000 | ( 11.6 ns …  25.1 ns) |  12.0 ns |  13.9 ns |  15.2 ns |
+| ts-pattern raw          |          1.3 µs |       783,200 | (952.8 ns …   1.8 µs) |   1.4 µs |   1.8 µs |   1.8 µs |
+| ts-pattern swc plugin   |         17.3 ns |    57,860,000 | ( 12.5 ns … 194.1 ns) |  20.9 ns |  29.4 ns |  35.6 ns |
 
 summary
   ts-pattern swc plugin
-    74.37x faster than ts-pattern raw
+    73.88x faster than ts-pattern raw
 
 group p-string-minlength
-| ts-pattern raw          |        897.9 ns |     1,114,000 | (874.6 ns … 987.7 ns) | 906.3 ns | 987.7 ns | 987.7 ns |
-| ts-pattern swc plugin   |         12.3 ns |    81,410,000 | ( 11.5 ns …  27.1 ns) |  12.4 ns |  14.2 ns |  14.6 ns |
+| ts-pattern raw          |          1.3 µs |       781,300 | (981.3 ns …   1.6 µs) |   1.4 µs |   1.6 µs |   1.6 µs |
+| ts-pattern swc plugin   |         16.0 ns |    62,440,000 | ( 12.6 ns …  40.5 ns) |  18.5 ns |  28.8 ns |  31.0 ns |
 
 summary
   ts-pattern swc plugin
-    73.10x faster than ts-pattern raw
+    79.92x faster than ts-pattern raw
 
 group p-string-regex
-| ts-pattern raw          |        938.1 ns |     1,066,000 | (910.9 ns …   1.2 µs) | 937.8 ns |   1.2 µs |   1.2 µs |
-| ts-pattern swc plugin   |         18.2 ns |    54,840,000 | ( 17.1 ns …  43.4 ns) |  18.2 ns |  22.4 ns |  33.2 ns |
+| ts-pattern raw          |          1.3 µs |       786,700 | (986.5 ns …   2.2 µs) |   1.3 µs |   2.2 µs |   2.2 µs |
+| ts-pattern swc plugin   |         34.2 ns |    29,240,000 | ( 24.4 ns … 133.0 ns) |  40.1 ns |  68.9 ns |  77.1 ns |
 
 summary
   ts-pattern swc plugin
-    51.44x faster than ts-pattern raw
+    37.17x faster than ts-pattern raw
 
 group p-string-startswith
-| ts-pattern raw          |        910.8 ns |     1,098,000 | (883.7 ns … 970.6 ns) | 913.9 ns | 970.6 ns | 970.6 ns |
-| ts-pattern swc plugin   |         12.2 ns |    82,110,000 | ( 11.4 ns …  27.6 ns) |  12.3 ns |  14.5 ns |  15.2 ns |
+| ts-pattern raw          |          1.2 µs |       818,300 | (958.6 ns …   1.8 µs) |   1.3 µs |   1.8 µs |   1.8 µs |
+| ts-pattern swc plugin   |         15.3 ns |    65,280,000 | ( 12.6 ns … 100.7 ns) |  16.2 ns |  25.8 ns |  28.1 ns |
 
 summary
   ts-pattern swc plugin
-    74.78x faster than ts-pattern raw
+    79.77x faster than ts-pattern raw
 
 group p-string-wildcard
-| ts-pattern raw          |        141.6 ns |     7,061,000 | (133.5 ns … 186.0 ns) | 145.0 ns | 176.6 ns | 185.0 ns |
-| ts-pattern swc plugin   |         12.0 ns |    83,200,000 | ( 11.6 ns …  42.1 ns) |  12.0 ns |  15.6 ns |  17.7 ns |
+| ts-pattern raw          |        232.8 ns |     4,295,000 | (133.8 ns … 639.2 ns) | 269.2 ns | 485.2 ns | 513.6 ns |
+| ts-pattern swc plugin   |         18.1 ns |    55,260,000 | ( 13.1 ns … 102.2 ns) |  22.4 ns |  30.2 ns |  34.7 ns |
 
 summary
   ts-pattern swc plugin
-    11.78x faster than ts-pattern raw
+    12.87x faster than ts-pattern raw
 
 group p-symbol-wildcard
-| ts-pattern raw          |         79.7 ns |    12,540,000 | ( 72.4 ns … 133.2 ns) |  82.3 ns | 103.4 ns | 110.1 ns |
-| ts-pattern swc plugin   |         11.9 ns |    84,250,000 | ( 11.1 ns …  28.2 ns) |  11.9 ns |  13.6 ns |  14.2 ns |
+| ts-pattern raw          |        129.4 ns |     7,726,000 | ( 75.5 ns … 267.4 ns) | 152.7 ns | 227.2 ns | 260.2 ns |
+| ts-pattern swc plugin   |         16.0 ns |    62,630,000 | ( 12.7 ns …  37.3 ns) |  18.2 ns |  24.4 ns |  24.7 ns |
 
 summary
   ts-pattern swc plugin
-     6.72x faster than ts-pattern raw
+     8.11x faster than ts-pattern raw
 
 group p-union-patterns
-| ts-pattern raw          |        902.2 ns |     1,108,000 | (879.1 ns … 965.0 ns) | 905.1 ns | 965.0 ns | 965.0 ns |
-| ts-pattern swc plugin   |         36.6 ns |    27,340,000 | ( 34.9 ns …  56.2 ns) |  36.6 ns |  42.9 ns |  47.1 ns |
+| ts-pattern raw          |          1.2 µs |       829,400 | (961.2 ns …   1.5 µs) |   1.3 µs |   1.5 µs |   1.5 µs |
+| ts-pattern swc plugin   |         40.4 ns |    24,770,000 | ( 32.7 ns …  66.2 ns) |  43.3 ns |  62.7 ns |  63.3 ns |
 
 summary
   ts-pattern swc plugin
-    24.66x faster than ts-pattern raw
+    29.87x faster than ts-pattern raw
 
 group p-when-patterns
-| ts-pattern raw          |          1.2 µs |       808,300 | (  1.2 µs …   1.5 µs) |   1.2 µs |   1.5 µs |   1.5 µs |
-| ts-pattern swc plugin   |        101.0 ns |     9,899,000 | ( 97.0 ns … 124.8 ns) | 101.4 ns | 115.1 ns | 121.7 ns |
+| ts-pattern raw          |          1.7 µs |       591,700 | (  1.3 µs …   2.2 µs) |   2.0 µs |   2.2 µs |   2.2 µs |
+| ts-pattern swc plugin   |        137.5 ns |     7,274,000 | ( 98.1 ns … 257.6 ns) | 156.8 ns | 229.9 ns | 249.8 ns |
 
 summary
   ts-pattern swc plugin
-    12.25x faster than ts-pattern raw
+    12.29x faster than ts-pattern raw
 
 group p-wildcard
-| ts-pattern raw          |         84.8 ns |    11,790,000 | ( 77.0 ns … 125.7 ns) |  87.5 ns | 105.9 ns | 115.0 ns |
-| ts-pattern swc plugin   |         10.3 ns |    97,420,000 | (  9.7 ns …  18.9 ns) |  10.3 ns |  11.5 ns |  12.3 ns |
+| ts-pattern raw          |        168.5 ns |     5,936,000 | ( 95.9 ns …   1.1 µs) | 189.4 ns | 332.2 ns | 446.0 ns |
+| ts-pattern swc plugin   |         14.7 ns |    68,090,000 | ( 11.1 ns … 190.5 ns) |  17.8 ns |  25.7 ns |  29.6 ns |
 
 summary
   ts-pattern swc plugin
-     8.26x faster than ts-pattern raw
+    11.47x faster than ts-pattern raw
 
 group patterns-p
-| ts-pattern raw          |        223.9 ns |     4,467,000 | (205.8 ns … 393.2 ns) | 226.4 ns | 303.1 ns | 373.6 ns |
-| ts-pattern swc plugin   |         18.5 ns |    53,950,000 | ( 17.3 ns …  40.8 ns) |  18.5 ns |  23.9 ns |  27.1 ns |
+| ts-pattern raw          |        426.0 ns |     2,347,000 | (219.3 ns … 968.9 ns) | 509.6 ns | 958.0 ns | 968.9 ns |
+| ts-pattern swc plugin   |         27.7 ns |    36,070,000 | ( 19.3 ns … 267.8 ns) |  32.5 ns |  52.9 ns |  67.4 ns |
 
 summary
   ts-pattern swc plugin
-    12.08x faster than ts-pattern raw
+    15.37x faster than ts-pattern raw
 
 group patterns-pattern
-| ts-pattern raw          |        222.7 ns |     4,489,000 | (208.1 ns … 321.2 ns) | 225.2 ns | 276.6 ns | 282.3 ns |
-| ts-pattern swc plugin   |         18.9 ns |    52,850,000 | ( 18.0 ns …  38.0 ns) |  19.0 ns |  21.0 ns |  21.4 ns |
+| ts-pattern raw          |        440.3 ns |     2,271,000 | (264.0 ns … 726.9 ns) | 486.9 ns | 691.9 ns | 726.9 ns |
+| ts-pattern swc plugin   |         25.9 ns |    38,580,000 | ( 19.1 ns … 133.1 ns) |  31.3 ns |  42.7 ns |  50.4 ns |
 
 summary
   ts-pattern swc plugin
-    11.77x faster than ts-pattern raw
+    16.99x faster than ts-pattern raw
 
 group state-reducer
-| ts-pattern raw          |          2.7 µs |       367,900 | (  2.7 µs …   2.9 µs) |   2.7 µs |   2.9 µs |   2.9 µs |
-| ts-pattern swc plugin   |         72.5 ns |    13,800,000 | ( 68.5 ns … 110.9 ns) |  72.8 ns |  89.8 ns |  91.7 ns |
+| ts-pattern raw          |          4.1 µs |       246,500 | (  3.2 µs …   5.0 µs) |   4.4 µs |   5.0 µs |   5.0 µs |
+| ts-pattern swc plugin   |         93.4 ns |    10,710,000 | ( 69.4 ns … 216.6 ns) | 106.5 ns | 167.6 ns | 170.9 ns |
 
 summary
   ts-pattern swc plugin
-    37.50x faster than ts-pattern raw
+    43.44x faster than ts-pattern raw
 
 group tuples-arrays
-| ts-pattern raw          |        764.4 ns |     1,308,000 | (745.9 ns … 842.6 ns) | 768.3 ns | 842.6 ns | 842.6 ns |
-| ts-pattern swc plugin   |         41.1 ns |    24,360,000 | ( 39.1 ns …  71.2 ns) |  41.3 ns |  45.1 ns |  50.0 ns |
+| ts-pattern raw          |          1.0 µs |       969,200 | (811.5 ns …   1.6 µs) |   1.2 µs |   1.6 µs |   1.6 µs |
+| ts-pattern swc plugin   |         56.7 ns |    17,630,000 | ( 41.6 ns … 174.6 ns) |  63.3 ns | 117.4 ns | 122.7 ns |
 
 summary
   ts-pattern swc plugin
-    18.62x faster than ts-pattern raw
+    18.19x faster than ts-pattern raw
 
 group type-guard-function
-| ts-pattern raw          |        964.1 ns |     1,037,000 | (945.1 ns …   1.0 µs) | 969.7 ns |   1.0 µs |   1.0 µs |
-| ts-pattern swc plugin   |         26.6 ns |    37,620,000 | ( 25.1 ns …  56.3 ns) |  26.7 ns |  28.6 ns |  30.1 ns |
+| ts-pattern raw          |          1.2 µs |       850,300 | (966.2 ns …   1.5 µs) |   1.3 µs |   1.5 µs |   1.5 µs |
+| ts-pattern swc plugin   |         30.1 ns |    33,230,000 | ( 23.0 ns … 173.1 ns) |  34.0 ns |  53.1 ns |  59.7 ns |
 
 summary
   ts-pattern swc plugin
-    36.27x faster than ts-pattern raw
+    39.08x faster than ts-pattern raw
 
 group type-narrowing-select
-| ts-pattern raw          |          2.4 µs |       409,100 | (  2.4 µs …   2.6 µs) |   2.5 µs |   2.6 µs |   2.6 µs |
-| ts-pattern swc plugin   |        215.5 ns |     4,640,000 | (209.4 ns … 241.5 ns) | 216.3 ns | 233.9 ns | 238.6 ns |
+| ts-pattern raw          |          3.3 µs |       306,900 | (  2.8 µs …   4.0 µs) |   3.4 µs |   4.0 µs |   4.0 µs |
+| ts-pattern swc plugin   |        259.0 ns |     3,861,000 | (208.1 ns … 482.7 ns) | 281.0 ns | 401.2 ns | 401.5 ns |
 
 summary
   ts-pattern swc plugin
-    11.34x faster than ts-pattern raw
+    12.58x faster than ts-pattern raw
 
 group type-narrowing
-| ts-pattern raw          |        544.6 ns |     1,836,000 | (528.9 ns … 623.3 ns) | 545.6 ns | 603.7 ns | 623.3 ns |
-| ts-pattern swc plugin   |         25.0 ns |    40,080,000 | ( 24.0 ns …  48.6 ns) |  25.2 ns |  28.6 ns |  33.1 ns |
+| ts-pattern raw          |        902.7 ns |     1,108,000 | (590.5 ns …   1.2 µs) |   1.0 µs |   1.2 µs |   1.2 µs |
+| ts-pattern swc plugin   |         26.7 ns |    37,410,000 | ( 20.4 ns …  68.0 ns) |  30.2 ns |  43.0 ns |  47.0 ns |
 
 summary
   ts-pattern swc plugin
-    21.83x faster than ts-pattern raw
+    33.77x faster than ts-pattern raw
 ```
 
 <!-- /automd -->
@@ -600,4 +599,6 @@ Supported patterns:
 - `P.string`, `P.number`, `P.boolean`, `P.bigint`, `P.symbol`, `P.nullish`, `P.nonNullable`
 - `P.optional(pattern)`, `P.not(pattern)`, `P.union(...patterns)`, `P.array(pattern?)`, `P.instanceOf(Ctor)`, `P.when(predicate)`
 
-Unsupported chains are left unchanged to preserve runtime behavior. `P.select`, custom matcher objects, `.returnType`, and selection arguments are not compiled yet.
+Supported selection patterns include `P.select` and array/record selection aggregation. The plugin also handles `.when`, `P.set`, `P.map`, `P.record`, `P.intersection`, and common string/number refinements.
+
+Unsupported chains, custom matcher objects, `.returnType`, and unsupported combinations are left unchanged to preserve runtime behavior. Keep ts-pattern installed even when most expressions compile.

@@ -1,6 +1,7 @@
 // @ts-self-types="./register.d.ts"
-import { register } from "node:module"
-import { fileURLToPath } from "node:url"
+import { registerHooks } from "node:module"
+import { initialize, load, resolve } from "./loader.mjs"
+import { defaultPluginPath } from "./transform.mjs"
 
 const env = () => {
   try {
@@ -10,10 +11,7 @@ const env = () => {
   }
 }
 
-const pluginPath = env()
-  ?? fileURLToPath(new URL("./target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin", import.meta.url))
+const pluginPath = env() ?? await defaultPluginPath()
 
-register(new URL("./loader.mjs", import.meta.url), {
-  parentURL: import.meta.url,
-  data: { pluginPath },
-})
+initialize({ pluginPath })
+registerHooks({ load, resolve })

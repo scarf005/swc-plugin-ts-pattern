@@ -3,7 +3,7 @@
 import "./app.css"
 import { signal } from "@preact/signals"
 import { useEffect, useRef } from "preact/hooks"
-import * as monaco from "monaco-editor/esm/vs/editor/editor.api"
+import * as monaco from "monaco-editor/editor/editor.api.js"
 import {
   benchmarkModules,
   formatBenchmarkComparison,
@@ -13,22 +13,17 @@ import { type ModuleType, transformInBrowser } from "./browser-transform.ts"
 import { cycleValue, getWheelStep } from "./example-wheel.ts"
 import { garbageInputPairsForInputs, seedFromString } from "./property.ts"
 import { formatValue, getModule } from "./runtime.ts"
-import "monaco-editor/esm/vs/basic-languages/javascript/javascript.contribution"
-import "monaco-editor/esm/vs/basic-languages/typescript/typescript.contribution"
-import * as tsRuntime from "monaco-editor/esm/vs/language/typescript/monaco.contribution"
-import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker"
-import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
-
-type MonacoTypeScript =
-  typeof import("monaco-editor/esm/vs/editor/editor.main").typescript
-
-const ts = tsRuntime as unknown as MonacoTypeScript
+import "monaco-editor/languages/definitions/javascript/register.js"
+import "monaco-editor/languages/definitions/typescript/register.js"
+import * as ts from "monaco-editor/languages/features/typescript/register.js"
+import EditorWorker from "monaco-editor/editor/editor.worker.js?worker"
+import TsWorker from "monaco-editor/languages/features/typescript/ts.worker.js?worker"
 const monacoGlobals = globalThis as typeof globalThis & {
   MonacoEnvironment?: monaco.Environment
 }
 
 monacoGlobals.MonacoEnvironment = {
-  getWorker: (_workerId, label) =>
+  getWorker: (_workerId: string, label: string) =>
     label === "typescript" || label === "javascript"
       ? new TsWorker()
       : new EditorWorker(),
@@ -81,8 +76,8 @@ const appBasePath = (() => {
 
 const routeForPattern = (id: string) => `${appBasePath}examples/${id}`
 
-const patternFromPath = () => {
-  const match = initialPath.match(/(?:^|\/)examples\/([^/]+)\/?$/)
+const patternFromPath = (path = location.pathname) => {
+  const match = path.match(/(?:^|\/)examples\/([^/]+)\/?$/)
   const id = match?.[1]
   return commonPatterns.find((pattern) => pattern.id === id) ??
     commonPatterns[0]
@@ -119,6 +114,7 @@ type TypeScriptEditorProps = {
 type CodeViewerProps = {
   value: string
   theme: Theme
+  uri: string
 }
 
 const getInitialTheme = (): Theme => {
@@ -388,7 +384,7 @@ const onEditorChange = (value: string) => {
   source.value = value
   selectedPattern.value = "custom"
   resetOutputs()
-  pushPath("/")
+  pushPath(appBasePath)
   void compileSource(value)
 }
 
@@ -488,7 +484,7 @@ const TypeScriptEditor = (
   return <div class="monaco-host" ref={hostRef} />
 }
 
-const CodeViewer = ({ value, theme }: CodeViewerProps) => {
+const CodeViewer = ({ value, theme, uri }: CodeViewerProps) => {
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
 
@@ -497,7 +493,7 @@ const CodeViewer = ({ value, theme }: CodeViewerProps) => {
     const model = monaco.editor.createModel(
       value,
       "javascript",
-      monaco.Uri.parse("file:///compiled.js"),
+      monaco.Uri.parse(uri),
     )
     const editor = monaco.editor.create(hostRef.current, {
       automaticLayout: true,
@@ -582,6 +578,7 @@ export const App = () => (
           <CodeViewer
             value={status.value || compiledTsPattern.value}
             theme={theme.value}
+            uri="file:///compiled-ts-pattern.js"
           />
         </label>
       </section>
@@ -590,6 +587,7 @@ export const App = () => (
         <CodeViewer
           value={status.value || compiled.value}
           theme={theme.value}
+          uri="file:///compiled-plugin.js"
         />
       </label>
     </section>
@@ -599,7 +597,10 @@ export const App = () => (
         <h2>Rendered result</h2>
         <div class="rendered-results-grid">
           {runEntries.value.map((entry, index) => (
-            <article class="rendered-result-card" key={`${index}-${entry.input}`}>
+            <article
+              class="rendered-result-card"
+              key={`${index}-${entry.input}`}
+            >
               <pre>{entry.input}</pre>
               {typeof entry.rendered === "string"
                 ? isHtmlLike(entry.rendered)

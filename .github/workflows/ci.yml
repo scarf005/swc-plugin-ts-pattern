@@ -18,6 +18,16 @@ jobs:
             plugin/package-lock.json
             demo/package-lock.json
 
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.7
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+          components: rustfmt, clippy
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -28,7 +38,9 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
 
-      - run: rustup target add wasm32-wasip1
+      - run: cargo fmt --manifest-path plugin/Cargo.toml -- --check
+
+      - run: cargo clippy --manifest-path plugin/Cargo.toml --all-targets -- -D warnings
 
       - run: npm ci
         working-directory: plugin

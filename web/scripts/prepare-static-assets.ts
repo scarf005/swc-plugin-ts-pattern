@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from "node:fs"
+import { copyFileSync, mkdirSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -12,19 +12,17 @@ const pluginPath = resolve(
 )
 const publicPath = resolve(webRoot, "public/ts_pattern_swc_plugin.wasm")
 
-if (!existsSync(pluginPath)) {
-  const result = spawnSync("cargo", [
-    "build",
-    "--release",
-    "--target",
-    "wasm32-wasip1",
-  ], {
-    cwd: pluginRoot,
-    stdio: "inherit",
-  })
-  if (result.status !== 0) {
-    throw new Error("Failed to build ts-pattern SWC plugin wasm")
-  }
+const result = spawnSync("cargo", [
+  "build",
+  "--release",
+  "--target",
+  "wasm32-wasip1",
+], {
+  cwd: pluginRoot,
+  stdio: "inherit",
+})
+if (result.status !== 0) {
+  throw new Error("Failed to build ts-pattern SWC plugin wasm")
 }
 
 mkdirSync(dirname(publicPath), { recursive: true })

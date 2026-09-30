@@ -6,9 +6,9 @@
   "tasks": {
     "prepare-assets": "deno run -A scripts/prepare-static-assets.ts",
     "prepare-pages": "deno run -A scripts/prepare-pages.ts",
-    "dev": "deno task prepare-assets && deno run -A --node-modules-dir npm:vite",
-    "build": "deno task prepare-assets && deno run -A --node-modules-dir npm:vite build && deno task prepare-pages",
-    "preview": "deno run -A --node-modules-dir npm:vite preview",
+    "dev": "deno task prepare-assets && deno run -A --node-modules-dir vite",
+    "build": "deno task prepare-assets && deno run -A --node-modules-dir vite build && deno task prepare-pages",
+    "preview": "deno run -A --node-modules-dir vite preview",
     "serve": "deno task preview",
     "check": "deno check --unstable-detect-cjs src/main.tsx vite.config.ts src/benchmark.test.ts src/runtime.test.ts src/example-wheel.test.ts ts-pattern_bench.ts src/browser-transform.ts scripts/prepare-static-assets.ts scripts/prepare-pages.ts",
     "test": "deno test -A --unstable-detect-cjs src/benchmark.test.ts src/runtime.test.ts src/example-wheel.test.ts",
@@ -25,9 +25,10 @@
     "@preact/preset-vite": "npm:@preact/preset-vite@^2.10.2",
     "@preact/signals": "npm:@preact/signals@^2.5.1",
     "fast-check": "npm:fast-check@^4.3.0",
-    "monaco-editor": "npm:monaco-editor@^0.55.1",
+    "monaco-editor": "npm:monaco-editor@^0.57.0",
     "preact": "npm:preact@^10.28.0",
+    "playwright": "npm:playwright@1.60.0",
     "ts-pattern": "npm:ts-pattern@^5.8.0",
-    "vite": "npm:vite@^7.2.7"
+    "vite": "npm:vite@^7.3.6"
   }
 }

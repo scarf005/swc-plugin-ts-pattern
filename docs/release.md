@@ -1,16 +1,19 @@
 # Release
 
 1. Update `plugin/package.json`, `plugin/deno.json`, and `plugin/Cargo.toml` to the same version.
-2. Run `just test`.
-3. Commit the version change.
+2. Run `just test`, the demo build/lint/browser checks, and `cd web && deno task build`.
+   Runtime tests pack and install the npm archive in an isolated consumer project.
+3. Run `cd plugin && deno publish --dry-run`, then commit the validated version change.
 4. Create and push a matching tag:
 
 ```sh
-git tag v0.1.0
-git push origin main v0.1.0
+git tag vX.Y.Z
+git push origin main vX.Y.Z
 ```
 
-The `Release` workflow publishes to both npm and JSR only from `v*` tags after the test job passes.
+Replace `X.Y.Z` with the manifest version.
+
+The `Release` workflow publishes to both npm and JSR only from matching `v*` tags after the test job passes.
 
 Required repository setup:
 

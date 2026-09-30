@@ -1,19 +1,23 @@
 export type TransformTsPatternOptions = {
-  filename?: string;
-  pluginPath?: string;
-  pluginOptions?: Record<string, unknown>;
-  sourceMaps?: boolean | "inline";
-  swcOptions?: Record<string, unknown>;
-};
+  filename?: string
+  pluginPath?: string
+  pluginOptions?: Record<string, unknown>
+  sourceMaps?: boolean | "inline"
+  swcOptions?: Record<string, unknown>
+}
 
 export type TransformTsPatternResult = {
-  code: string;
-  map?: string;
-  diagnostics?: unknown[];
-};
+  code: string
+  map?: string
+  diagnostics?: unknown[]
+}
 
-export const defaultPluginPath: () => string;
+export const defaultPluginPath: () => Promise<string>
 export const transformTsPattern: (
   source: string,
   options?: TransformTsPatternOptions,
-) => Promise<TransformTsPatternResult>;
+) => Promise<TransformTsPatternResult>
+export const transformTsPatternSync: (
+  source: string,
+  options?: TransformTsPatternOptions,
+) => TransformTsPatternResult
