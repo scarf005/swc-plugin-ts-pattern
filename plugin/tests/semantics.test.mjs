@@ -527,6 +527,32 @@ test("record value getters run before effectful key checks", async () => {
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+test("record numeric key selections preserve coercion", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => match({ "1": "value" })
+      .with(P.record(P.number.select(), P.string), (keys) => keys)
+      .otherwise(() => null);
+  `,
+    [1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("record wildcard key selections preserve original and coerced keys", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => match({ "1": "value" })
+      .with(P.record(P.select("keys"), P.string.select("values")), (selection) => selection)
+      .otherwise(() => null);
+  `,
+    { keys: [1, "1"], values: ["value"] },
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
 test("record key selections preserve numeric coercion and both key matches", async () => {
   const code = await assertEquivalent(
     `
