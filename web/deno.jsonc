@@ -10,9 +10,10 @@
     "build": "deno task prepare-assets && deno run -A --node-modules-dir vite build && deno task prepare-pages",
     "preview": "deno run -A --node-modules-dir vite preview",
     "serve": "deno task preview",
-    "check": "deno check --unstable-detect-cjs src/main.tsx vite.config.ts src/benchmark.test.ts src/runtime.test.ts src/example-wheel.test.ts ts-pattern_bench.ts src/browser-transform.ts scripts/prepare-static-assets.ts scripts/prepare-pages.ts",
+    "check": "deno check --unstable-detect-cjs src/main.tsx vite.config.ts src/benchmark.test.ts src/runtime.test.ts src/example-wheel.test.ts src/browser.test.ts ts-pattern_bench.ts src/browser-transform.ts scripts/prepare-static-assets.ts scripts/prepare-pages.ts",
     "test": "deno test -A --unstable-detect-cjs src/benchmark.test.ts src/runtime.test.ts src/example-wheel.test.ts",
-    "bench": "deno bench -A --unstable-detect-cjs ts-pattern_bench.ts"
+    "bench": "deno bench -A --unstable-detect-cjs ts-pattern_bench.ts",
+    "test:browser": "deno task prepare-assets && deno test -A src/browser.test.ts"
   },
   "nodeModulesDir": "auto",
   "compilerOptions": {

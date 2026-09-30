@@ -52,6 +52,12 @@ jobs:
       - name: Web production build
         working-directory: web
         run: deno task build
+      - name: Install web browser
+        working-directory: web
+        run: deno run -A playwright install --with-deps chromium
+      - name: Web browser regressions
+        working-directory: web
+        run: deno task test:browser
       - name: Example type checks
         working-directory: examples
         run: deno task check

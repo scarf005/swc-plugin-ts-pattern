@@ -70,3 +70,11 @@ jobs:
 
       - run: npm run test:browser
         working-directory: demo
+
+      - name: Install web browser
+        working-directory: web
+        run: deno run -A playwright install --with-deps chromium
+
+      - name: Web browser regressions
+        working-directory: web
+        run: deno task test:browser
