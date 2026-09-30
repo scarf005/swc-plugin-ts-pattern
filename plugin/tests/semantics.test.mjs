@@ -371,3 +371,33 @@ test("evaluates later arm arguments after an earlier match", async () => {
   )
   assert.doesNotMatch(code, /\.with\(/)
 })
+
+test("record value getters run before effectful key checks", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const plainRegex = /a/y;
+      const plainEvents = [];
+      const plainInput = {
+        get a() { plainEvents.push(plainRegex.lastIndex); return plainRegex.lastIndex; },
+      };
+      const plain = match(plainInput)
+        .with(P.record(P.string.regex(plainRegex), 0), () => true)
+        .otherwise(() => false);
+      const selectedRegex = /a/y;
+      const selectedEvents = [];
+      const selectedInput = {
+        get a() { selectedEvents.push(selectedRegex.lastIndex); return selectedRegex.lastIndex; },
+      };
+      const selected = match(selectedInput)
+        .with(P.record(P.string.regex(selectedRegex), P.number.select()), (values) => values)
+        .otherwise(() => []);
+      return [[plain, plainEvents], [selected, selectedEvents]];
+    };
+  `,
+    [[true, [0]], [[0], [0]]],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
