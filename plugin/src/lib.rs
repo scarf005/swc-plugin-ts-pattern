@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{LazyLock, Mutex},
+};
 
 use swc_core::{
     common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
@@ -9,6 +12,9 @@ use swc_core::{
     },
     plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
 };
+
+static PRIVATE_IDENT_COUNTS: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
@@ -21,7 +27,6 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
     program
 }
 
-#[derive(Default)]
 struct TsPatternTransformer {
     unresolved_ctxt: SyntaxContext,
     match_imports: HashSet<Id>,
@@ -31,6 +36,22 @@ struct TsPatternTransformer {
     mutated_bindings: HashSet<Id>,
     non_exhaustive_error: Option<Expr>,
     needs_non_exhaustive_error_import: bool,
+}
+
+impl Default for TsPatternTransformer {
+    fn default() -> Self {
+        PRIVATE_IDENT_COUNTS.lock().unwrap().clear();
+        Self {
+            unresolved_ctxt: SyntaxContext::empty(),
+            match_imports: HashSet::new(),
+            p_imports: HashSet::new(),
+            namespaces: HashSet::new(),
+            const_bindings: HashMap::new(),
+            mutated_bindings: HashSet::new(),
+            non_exhaustive_error: None,
+            needs_non_exhaustive_error_import: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1167,6 +1188,9 @@ impl TsPatternTransformer {
                 }
                 (None, [arg]) => {
                     if let Some(name) = selection_name(&arg.expr) {
+                        if name == "__proto__" {
+                            return None;
+                        }
                         selections.push(SelectionBinding {
                             name: Some(name),
                             value,
@@ -1184,6 +1208,9 @@ impl TsPatternTransformer {
                 }
                 (Some(base), [arg]) => {
                     if let Some(name) = selection_name(&arg.expr) {
+                        if name == "__proto__" {
+                            return None;
+                        }
                         selections.push(SelectionBinding {
                             name: Some(name),
                             value: value.clone(),
@@ -1195,8 +1222,12 @@ impl TsPatternTransformer {
                     }
                 }
                 (None, [name, inner]) => {
+                    let name = selection_name(&name.expr)?;
+                    if name == "__proto__" {
+                        return None;
+                    }
                     selections.push(SelectionBinding {
-                        name: Some(selection_name(&name.expr)?),
+                        name: Some(name),
                         value: value.clone(),
                         ..Default::default()
                     });
@@ -1436,6 +1467,8 @@ impl TsPatternTransformer {
             let key_pattern = (call.args.len() == 2).then_some(&call.args[0].expr);
             let value_pattern = &call.args[call.args.len() - 1].expr;
             let mut key_selections = Vec::new();
+            let mut coerced_key_test = None;
+            let mut coerced_key_ident = None;
             let key_test = if let Some(key_pattern) = key_pattern {
                 let direct_key_test = self.pattern_test_with_selections(
                     ident_expr(&key_ident),
@@ -1467,6 +1500,30 @@ impl TsPatternTransformer {
                         direct_key_test,
                     )
                 } else {
+                    let coerced_ident = private_ident!("_tsPatternCoercedKey");
+                    let mut _coerced_selections = Vec::new();
+                    let test = self.pattern_test_with_selections(
+                        ident_expr(&coerced_ident),
+                        key_pattern,
+                        &mut _coerced_selections,
+                    )?;
+                    coerced_key_test = Some(and(
+                        typeof_eq(ident_expr(&key_ident), "string"),
+                        and(
+                            unary(
+                                UnaryOp::Bang,
+                                call_member(
+                                    member_expr(
+                                        global_ident("Number", self.unresolved_ctxt),
+                                        "isNaN",
+                                    ),
+                                    vec![ident_expr(&coerced_ident)],
+                                ),
+                            ),
+                            test,
+                        ),
+                    ));
+                    coerced_key_ident = Some(coerced_ident);
                     direct_key_test
                 }
             } else {
@@ -1478,6 +1535,18 @@ impl TsPatternTransformer {
                 value_pattern,
                 &mut value_selections,
             )?;
+            if key_selections
+                .iter()
+                .chain(value_selections.iter())
+                .any(|selection| {
+                    selection
+                        .name
+                        .as_deref()
+                        .is_some_and(unsupported_record_selection_name)
+                })
+            {
+                return None;
+            }
             if !key_selections.is_empty() || !value_selections.is_empty() {
                 let all_selections = key_selections
                     .iter()
@@ -1498,6 +1567,8 @@ impl TsPatternTransformer {
                     key_ident.clone(),
                     value_ident.clone(),
                     key_test,
+                    coerced_key_test,
+                    coerced_key_ident,
                     value_test,
                     &key_selections,
                     &value_selections,
@@ -2561,6 +2632,24 @@ fn named_selection_object(selections: Vec<SelectionBinding>) -> Expr {
     })
 }
 
+fn unsupported_record_selection_name(name: &str) -> bool {
+    matches!(
+        name,
+        "__defineGetter__"
+            | "__defineSetter__"
+            | "__lookupGetter__"
+            | "__lookupSetter__"
+            | "__proto__"
+            | "constructor"
+            | "hasOwnProperty"
+            | "isPrototypeOf"
+            | "propertyIsEnumerable"
+            | "toLocaleString"
+            | "toString"
+            | "valueOf"
+    )
+}
+
 fn selection_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Lit(Lit::Str(str)) => Some(str.value.to_string_lossy().to_string()),
@@ -2772,12 +2861,20 @@ fn single_object_prop_with_object_value(pattern: &Expr) -> Option<(PropName, &Ex
         .then_some((key_value.key.clone(), &key_value.value))
 }
 
+fn fresh_private_ident(prefix: &str) -> Ident {
+    let mut counts = PRIVATE_IDENT_COUNTS.lock().unwrap();
+    let count = counts.entry(prefix.to_string()).or_default();
+    let name = if *count == 0 {
+        prefix.to_string()
+    } else {
+        format!("{prefix}_{count}")
+    };
+    *count += 1;
+    Ident::new(name.into(), DUMMY_SP, Default::default())
+}
+
 fn private_ident_for_index(prefix: &str, index: usize) -> Ident {
-    Ident::new(
-        format!("{prefix}{index}").into(),
-        DUMMY_SP,
-        Default::default(),
-    )
+    fresh_private_ident(&format!("{prefix}{index}"))
 }
 
 fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
@@ -3554,6 +3651,8 @@ fn record_selection_match(
     key_ident: Ident,
     value_ident: Ident,
     key_test: Expr,
+    coerced_key_test: Option<Expr>,
+    coerced_key_ident: Option<Ident>,
     value_test: Expr,
     key_selections: &[SelectionBinding],
     value_selections: &[SelectionBinding],
@@ -3601,38 +3700,92 @@ fn record_selection_match(
             value_selections,
         ),
     );
-    let mut collect_selections = vec![expr_stmt(call_member(
-        member_expr(ident_expr(&selected_keys), "push"),
-        vec![ident_expr(&key_ident)],
-    ))];
+    let coerced_key_match = coerced_key_test
+        .as_ref()
+        .map(|_| private_ident!("_tsPatternRecordCoercedKeyMatch"));
+    let mut collect_selections = Vec::new();
+    if let Some(coerced_key_match) = &coerced_key_match {
+        if let Some(coerced_key_ident) = &coerced_key_ident {
+            collect_selections.push(Stmt::If(IfStmt {
+                span: DUMMY_SP,
+                test: Box::new(ident_expr(coerced_key_match)),
+                cons: Box::new(Stmt::Block(BlockStmt {
+                    span: DUMMY_SP,
+                    ctxt: Default::default(),
+                    stmts: vec![expr_stmt(call_member(
+                        member_expr(ident_expr(&selected_keys), "push"),
+                        vec![ident_expr(coerced_key_ident)],
+                    ))],
+                })),
+                alt: None,
+            }));
+        }
+        if !key_selections.is_empty() {
+            collect_selections.push(Stmt::If(IfStmt {
+                span: DUMMY_SP,
+                test: Box::new(ident_expr(&key_match)),
+                cons: Box::new(Stmt::Block(BlockStmt {
+                    span: DUMMY_SP,
+                    ctxt: Default::default(),
+                    stmts: vec![expr_stmt(call_member(
+                        member_expr(ident_expr(&selected_keys), "push"),
+                        vec![ident_expr(&key_ident)],
+                    ))],
+                })),
+                alt: None,
+            }));
+        }
+    } else if !key_selections.is_empty() {
+        collect_selections.push(expr_stmt(call_member(
+            member_expr(ident_expr(&selected_keys), "push"),
+            vec![ident_expr(&key_ident)],
+        )));
+    }
     for (array, capture) in value_arrays.iter().zip(value_captures.iter()) {
         collect_selections.push(expr_stmt(call_member(
             member_expr(ident_expr(array), "push"),
             vec![ident_expr(capture)],
         )));
     }
+    let mut entry_stmts = vec![const_stmt(
+        value_ident.clone(),
+        computed_member_expr(ident_expr(&record_value), ident_expr(&key_ident)),
+    )];
+    if let (Some(coerced_key_test), Some(coerced_key_ident), Some(coerced_key_match)) = (
+        coerced_key_test,
+        coerced_key_ident,
+        coerced_key_match.clone(),
+    ) {
+        entry_stmts.push(const_stmt(
+            coerced_key_ident.clone(),
+            cond_expr(
+                typeof_eq(ident_expr(&key_ident), "string"),
+                call_expr(global_ident("Number", ctxt), vec![ident_expr(&key_ident)]),
+                null_lit(),
+            ),
+        ));
+        entry_stmts.push(const_stmt(coerced_key_match, coerced_key_test));
+    }
+    entry_stmts.push(const_stmt(key_match.clone(), key_test));
+    entry_stmts.push(const_stmt(value_match.clone(), value_test));
+    let key_match_result = coerced_key_match
+        .map(|coerced_key_match| or(ident_expr(&coerced_key_match), ident_expr(&key_match)))
+        .unwrap_or_else(|| ident_expr(&key_match));
+    entry_stmts.push(Stmt::If(IfStmt {
+        span: DUMMY_SP,
+        test: Box::new(ident_expr(&value_match)),
+        cons: Box::new(Stmt::Block(BlockStmt {
+            span: DUMMY_SP,
+            ctxt: Default::default(),
+            stmts: collect_selections,
+        })),
+        alt: None,
+    }));
+    entry_stmts.push(return_stmt(and(key_match_result, ident_expr(&value_match))));
     let entry_body = BlockStmt {
         span: DUMMY_SP,
         ctxt: Default::default(),
-        stmts: vec![
-            const_stmt(
-                value_ident.clone(),
-                computed_member_expr(ident_expr(&record_value), ident_expr(&key_ident)),
-            ),
-            const_stmt(key_match.clone(), key_test),
-            const_stmt(value_match.clone(), value_test),
-            Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(and(ident_expr(&key_match), ident_expr(&value_match))),
-                cons: Box::new(Stmt::Block(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    stmts: collect_selections,
-                })),
-                alt: None,
-            }),
-            return_stmt(and(ident_expr(&key_match), ident_expr(&value_match))),
-        ],
+        stmts: entry_stmts,
     };
     let matcher = call_member(
         member_expr(ident_expr(&keys), "every"),

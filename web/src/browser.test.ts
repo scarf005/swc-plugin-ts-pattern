@@ -50,6 +50,8 @@ const withPlayground = async (
     }
     browser = await chromium.launch()
     const page = await browser.newPage()
+    // Cold WASM compilation also shares CPU with other CI jobs.
+    page.setDefaultTimeout(120_000)
     await run(page, origin)
   } finally {
     try {
@@ -110,12 +112,14 @@ Deno.test("playground renders, compiles, restores history, edits and runs benchm
     await page.getByRole("button", { name: "Benchmark", exact: true }).click()
     await page.locator(".benchmark-output").filter({
       hasText: "browser benchmark",
-    }).waitFor()
-    assert(
-      (await page.locator(".benchmark-output").textContent())?.includes(
-        "checked",
-      ),
-    )
+    }).waitFor().catch(async (error) => {
+      throw new Error(
+        `${error.message}\n${await page.locator("body").innerText()}`,
+      )
+    })
+    const benchmarkText = await page.locator(".benchmark-output").textContent()
+    assert(benchmarkText?.includes("checked"))
+    assert(!/Infinity|NaN/.test(benchmarkText ?? ""))
     await page.goto(`${origin}/subdir/examples/literals`)
     await waitForCompilation(page, moduleUrl)
     await page.getByRole("textbox", { name: "Editor content" }).first().focus()

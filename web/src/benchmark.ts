@@ -11,7 +11,7 @@ export type BenchmarkComparison =
     identicalCode: false
     baseline: BenchResult
     optimized: BenchResult
-    speedup: number
+    speedup: number | null
     sampleCount: number
   }
 
@@ -204,12 +204,17 @@ export const benchmarkModules = (
 
   const baseline = median(baselineResults)
   const optimized = median(optimizedResults)
+  const speedup = baseline.ms / optimized.ms
 
   return {
     identicalCode: false,
     baseline,
     optimized,
-    speedup: baseline.ms / optimized.ms,
+    speedup: Number.isFinite(baseline.ms) && Number.isFinite(optimized.ms) &&
+        baseline.ms > 0 && optimized.ms > 0 && Number.isFinite(speedup) &&
+        speedup > 0
+      ? speedup
+      : null,
     sampleCount,
   }
 }
@@ -218,6 +223,11 @@ const formatMs = (value: number) => value.toFixed(2)
 
 const formatUs = (ms: number, count: number) => ((ms * 1000) / count).toFixed(3)
 
+const formatMeasurement = ({ ms }: BenchResult, count: number) =>
+  Number.isFinite(ms) && ms > 0
+    ? `${formatMs(ms)} ms/sample (${formatUs(ms, count)} µs/iteration)`
+    : "not measurable at current timer resolution"
+
 export const formatBenchmarkComparison = (
   result: BenchmarkComparison,
   options: BenchmarkFormatOptions,
@@ -225,15 +235,13 @@ export const formatBenchmarkComparison = (
   result.identicalCode ? result.note : [
     `${options.runtimeLabel}: ${result.sampleCount} samples × ${options.count} iterations/sample`,
     `inputs: ${options.inputCount} benchmarked, ${options.generatedInputCount} generated, ${options.checkedInputCount} checked, ${options.rejectedInputCount} rejected`,
-    `ts-pattern: ${formatMs(result.baseline.ms)} ms/sample (${
-      formatUs(result.baseline.ms, options.count)
-    } µs/iteration)`,
-    `compiled: ${formatMs(result.optimized.ms)} ms/sample (${
-      formatUs(result.optimized.ms, options.count)
-    } µs/iteration)`,
-    `ts-pattern SWC plugin: ${
-      result.speedup.toFixed(2)
-    }x faster than ts-pattern`,
+    `ts-pattern: ${formatMeasurement(result.baseline, options.count)}`,
+    `compiled: ${formatMeasurement(result.optimized, options.count)}`,
+    result.speedup === null
+      ? "Speedup unavailable: increase iterations/sample."
+      : `ts-pattern SWC plugin: ${
+        result.speedup.toFixed(2)
+      }x faster than ts-pattern`,
   ].join("\n")
 
 export const getBenchmarkSink = () => sink

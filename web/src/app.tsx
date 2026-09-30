@@ -2,7 +2,7 @@
 
 import "./app.css"
 import { signal } from "@preact/signals"
-import { useEffect, useRef } from "preact/hooks"
+import { useEffect, useLayoutEffect, useRef } from "preact/hooks"
 import * as monaco from "monaco-editor/editor/editor.api.js"
 import {
   benchmarkModules,
@@ -438,7 +438,7 @@ const TypeScriptEditor = (
 
   onChangeRef.current = onChange
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hostRef.current) return
     const model = monaco.editor.createModel(
       value,
@@ -469,7 +469,8 @@ const TypeScriptEditor = (
     }
   }, [])
 
-  useEffect(() => {
+  // A delayed prop echo can overwrite newer keystrokes and reset the cursor.
+  useLayoutEffect(() => {
     const editor = editorRef.current
     if (!editor || editor.getValue() === value) return
     isUpdatingRef.current = true
@@ -488,7 +489,7 @@ const CodeViewer = ({ value, theme, uri }: CodeViewerProps) => {
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!hostRef.current) return
     const model = monaco.editor.createModel(
       value,
@@ -515,7 +516,7 @@ const CodeViewer = ({ value, theme, uri }: CodeViewerProps) => {
     }
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const editor = editorRef.current
     if (!editor || editor.getValue() === value) return
     editor.setValue(value)

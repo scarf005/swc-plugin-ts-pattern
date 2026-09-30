@@ -18,7 +18,9 @@ import {
 } from "./property.ts"
 import { formatValue } from "./runtime.ts"
 
-for (const [baselineMs, optimizedMs] of [[0, 1], [1, 0], [0, 0], [1, Infinity]]) {
+for (
+  const [baselineMs, optimizedMs] of [[0, 1], [1, 0], [0, 0], [1, Infinity]]
+) {
   Deno.test(`unmeasurable samples do not claim speedups (${baselineMs}, ${optimizedMs})`, () => {
     const baselineRun = () => 1
     const optimizedRun = () => 1
