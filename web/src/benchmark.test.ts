@@ -18,6 +18,33 @@ import {
 } from "./property.ts"
 import { formatValue } from "./runtime.ts"
 
+for (const [baselineMs, optimizedMs] of [[0, 1], [1, 0], [0, 0]]) {
+  Deno.test(`zero-duration samples do not claim speedups (${baselineMs}, ${optimizedMs})`, () => {
+    const baselineRun = () => 1
+    const optimizedRun = () => 1
+    const result = benchmarkModules({
+      baseline: { code: "baseline", run: baselineRun, inputs: [1] },
+      optimized: { code: "optimized", run: optimizedRun, inputs: [1] },
+      count: 1000,
+      measureFn: (run) => ({
+        ms: run === baselineRun ? baselineMs : optimizedMs,
+      }),
+    })
+    if (result.identicalCode) throw new Error("Expected distinct code")
+    assertEquals(result.speedup, null)
+    const text = formatBenchmarkComparison(result, {
+      count: 1000,
+      inputCount: 1,
+      generatedInputCount: 0,
+      checkedInputCount: 1,
+      rejectedInputCount: 0,
+      runtimeLabel: "browser benchmark",
+    })
+    assertEquals(/Infinity|NaN|0\.000 µs\/iteration/.test(text), false)
+    assertEquals(text.includes("increase iterations/sample"), true)
+  })
+}
+
 Deno.test("benchmarkOrder alternates execution order", () => {
   assertEquals(benchmarkOrder(5), [
     ["baseline", "optimized"],
