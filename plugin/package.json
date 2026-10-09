@@ -30,7 +30,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "ts-pattern-swc": "./run.mjs"
+    "ts-pattern-swc": "run.mjs"
   },
   "files": [
     "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
