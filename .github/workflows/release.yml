@@ -87,6 +87,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -109,7 +110,9 @@ jobs:
           cp plugin/target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm plugin/target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin
       - name: Publish to npm
         working-directory: plugin
-        run: npm publish --access public --provenance --ignore-scripts
+        run: |
+          NPM_TAG="$(node -p "require('./package.json').version.match(/-([a-z]+)/)?.[1] ?? 'latest'")"
+          npm publish --access public --provenance --ignore-scripts --tag "$NPM_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish to JSR

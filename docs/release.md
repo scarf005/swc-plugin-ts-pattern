@@ -13,7 +13,7 @@ git push origin main vX.Y.Z
 
 Replace `X.Y.Z` with the manifest version.
 
-The `Release` workflow publishes to both npm and JSR only from matching `v*` tags after the test job passes.
+The `Release` workflow publishes to both npm and JSR only from matching `v*` tags after the test job passes. Prerelease versions such as `X.Y.Z-alpha.N`, `X.Y.Z-beta.N`, and `X.Y.Z-rc.N` use the matching npm dist-tag; other versions use `latest`.
 
 Required repository setup:
 
