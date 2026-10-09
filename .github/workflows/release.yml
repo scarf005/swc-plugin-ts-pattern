@@ -100,14 +100,14 @@ jobs:
           NPM_VERSION="$(node -p "require('./plugin/package.json').version")"
           JSR_NAME="$(deno eval "const config = JSON.parse(await Deno.readTextFile('./plugin/deno.json')); console.log(config.name)")"
           JSR_VERSION="$(deno eval "const config = JSON.parse(await Deno.readTextFile('./plugin/deno.json')); console.log(config.version)")"
-          test "$NPM_NAME" = "@scarf005/ts-pattern-swc-plugin"
+          test "$NPM_NAME" = "@scarf005/swc-plugin-ts-pattern"
           test "$JSR_NAME" = "$NPM_NAME"
           test "$JSR_VERSION" = "$NPM_VERSION"
           test "refs/tags/v$NPM_VERSION" = "$GITHUB_REF"
       - name: Build SWC plugin wasm
         run: |
           cargo build --manifest-path plugin/Cargo.toml --release --target wasm32-wasip1
-          cp plugin/target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm plugin/target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin
+          cp plugin/target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm plugin/target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin
       - name: Publish to npm
         working-directory: plugin
         run: |

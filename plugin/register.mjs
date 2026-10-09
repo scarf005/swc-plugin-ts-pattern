@@ -5,7 +5,7 @@ import { defaultPluginPath } from "./transform.mjs"
 
 const env = () => {
   try {
-    return globalThis.process?.env?.TS_PATTERN_SWC_PLUGIN_PATH
+    return globalThis.process?.env?.SWC_PLUGIN_TS_PATTERN_PATH
   } catch {
     return undefined
   }

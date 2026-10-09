@@ -8,9 +8,9 @@ const webRoot = resolve(scriptRoot, "..")
 const pluginRoot = resolve(webRoot, "../plugin")
 const pluginPath = resolve(
   pluginRoot,
-  "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm",
+  "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm",
 )
-const publicPath = resolve(webRoot, "public/ts_pattern_swc_plugin.wasm")
+const publicPath = resolve(webRoot, "public/swc_plugin_ts_pattern.wasm")
 
 const result = spawnSync("cargo", [
   "build",

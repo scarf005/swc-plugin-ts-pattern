@@ -177,7 +177,7 @@ Deno.test("playground retries failed SWC and plugin downloads without reloading"
   withPlayground(async (page, origin) => {
     await page.goto(origin)
     const moduleUrl = await editorModuleUrl(page)
-    for (const asset of ["**/ts_pattern_swc_plugin.wasm", "**/wasm_bg.wasm"]) {
+    for (const asset of ["**/swc_plugin_ts_pattern.wasm", "**/wasm_bg.wasm"]) {
       await page.route(
         asset,
         (route) =>

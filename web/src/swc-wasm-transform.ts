@@ -24,10 +24,10 @@ export const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 export const pluginRoot = resolve(webRoot, "../plugin")
 export const pluginPath = resolve(
   pluginRoot,
-  "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm",
+  "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm",
 )
 
-const pluginName = "@scarf005/ts-pattern-swc-plugin"
+const pluginName = "@scarf005/swc-plugin-ts-pattern"
 const require = createRequire(import.meta.url)
 const swcWasmPackagePath = resolve(
   pluginRoot,

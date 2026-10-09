@@ -1,5 +1,5 @@
 {
-  "name": "ts-pattern-swc-plugin-demo",
+  "name": "swc-plugin-ts-pattern-demo",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -12,7 +12,7 @@
     "test:build-output": "node tests/build-output.test.mjs"
   },
   "dependencies": {
-    "@scarf005/ts-pattern-swc-plugin": "file:../plugin",
+    "@scarf005/swc-plugin-ts-pattern": "file:../plugin",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "ts-pattern": "^5.9.0"

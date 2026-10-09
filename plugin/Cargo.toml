@@ -1,10 +1,10 @@
 [package]
-name = "ts-pattern-swc-plugin"
+name = "swc-plugin-ts-pattern"
 version = "0.2.0-alpha.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "SWC plugin that compiles ts-pattern match expressions into switch/if-else chains"
-repository = "https://github.com/scarf005/ts-pattern-swc-plugin"
+repository = "https://github.com/scarf005/swc-plugin-ts-pattern"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

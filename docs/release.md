@@ -17,8 +17,8 @@ The `Release` workflow publishes to both npm and JSR only from matching `v*` tag
 
 Required repository setup:
 
-- npm: create `@scarf005/ts-pattern-swc-plugin`, then configure trusted publishing
+- npm: create `@scarf005/swc-plugin-ts-pattern`, then configure trusted publishing
   for `.github/workflows/release.yml`, or add an `NPM_TOKEN` repository secret.
-- JSR: create/claim `@scarf005/ts-pattern-swc-plugin` and authorize GitHub Actions
+- JSR: create/claim `@scarf005/swc-plugin-ts-pattern` and authorize GitHub Actions
   OIDC for this repository.
 - GitHub: protect `main` by requiring the `Test` workflow check before merge.

@@ -202,7 +202,7 @@ test(
         "/register.mjs",
         "/loader.mjs",
         "/transform.mjs",
-        "/target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+        "/target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
       ])
       let wasmRequests = 0
       const server = createServer(async (request, response) => {

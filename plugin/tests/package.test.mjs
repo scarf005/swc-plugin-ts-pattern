@@ -34,7 +34,7 @@ test("packed npm archive exposes a working WASM, transform API, loader and CLI",
       join(directory, filename),
     ], { cwd: directory })
     const env = { ...process.env }
-    delete env.TS_PATTERN_SWC_PLUGIN_PATH
+    delete env.SWC_PLUGIN_TS_PATTERN_PATH
     const options = { cwd: directory, env }
     await writeFile(
       join(directory, "entry.ts"),
@@ -48,7 +48,7 @@ console.log(JSON.stringify({ result: classify(1), compiled: !classify.toString()
       const args of [
         [
           "--import",
-          "@scarf005/ts-pattern-swc-plugin/register",
+          "@scarf005/swc-plugin-ts-pattern/register",
           "entry.ts",
           "argument",
         ],
@@ -69,9 +69,9 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { transform } from "@swc/core";
-import { defaultPluginPath, transformTsPattern } from "@scarf005/ts-pattern-swc-plugin/transform";
+import { defaultPluginPath, transformTsPattern } from "@scarf005/swc-plugin-ts-pattern/transform";
 const require = createRequire(import.meta.url);
-const wasm = require.resolve("@scarf005/ts-pattern-swc-plugin");
+const wasm = require.resolve("@scarf005/swc-plugin-ts-pattern");
 assert.equal(await defaultPluginPath(), wasm);
 assert.equal((await readFile(wasm)).subarray(0, 4).toString(), "\\0asm");
 const source = 'import { match } from "ts-pattern"; export const value = match(1).with(1, () => 2).otherwise(() => 0)';

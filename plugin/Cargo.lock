@@ -1440,6 +1440,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
+name = "swc-plugin-ts-pattern"
+version = "0.2.0-alpha.0"
+dependencies = [
+ "swc_core",
+]
+
+[[package]]
 name = "swc_allocator"
 version = "4.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2052,13 +2059,6 @@ checksum = "dd69c5aa8f924c7519d6372789a74eac5b94fb0f8fcf0d4a97eb0bfc3e785f39"
 dependencies = [
  "serde",
  "stable_deref_trait",
-]
-
-[[package]]
-name = "ts-pattern-swc-plugin"
-version = "0.2.0-alpha.0"
-dependencies = [
- "swc_core",
 ]
 
 [[package]]

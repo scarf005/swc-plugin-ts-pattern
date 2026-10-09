@@ -23,7 +23,7 @@ test('compares SWC plugin and plain JS columns after textarea edits', async ({ p
 
   await page.goto('/', { waitUntil: 'networkidle' })
 
-  await expect(page.getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', 'https://github.com/scarf005/ts-pattern-swc-plugin')
+  await expect(page.getByRole('link', { name: 'GitHub' })).toHaveAttribute('href', 'https://github.com/scarf005/swc-plugin-ts-pattern')
   await expect(page.getByRole('link', { name: 'Playground' })).toHaveAttribute('href', 'https://ts-pattern-swc-plugin.pages.dev/')
   await expect(page.locator('.layout')).toHaveCSS('grid-template-columns', /.+ .+/)
 

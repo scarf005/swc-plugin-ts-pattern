@@ -1,4 +1,4 @@
-# @scarf005/ts-pattern-swc-plugin
+# @scarf005/swc-plugin-ts-pattern
 
 SWC plugin that compiles supported [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) `match` expressions into plain JavaScript ternaries, `switch` statements, or `if` chains.
 
@@ -18,13 +18,13 @@ The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserv
 From npm:
 
 ```sh
-npm install @scarf005/ts-pattern-swc-plugin
+npm install @scarf005/swc-plugin-ts-pattern
 ```
 
 Or from JSR:
 
 ```sh
-npx jsr add @scarf005/ts-pattern-swc-plugin
+npx jsr add @scarf005/swc-plugin-ts-pattern
 ```
 
 ## Configure SWC
@@ -33,7 +33,7 @@ Use `@swc/core@1.15.33`, the runtime matched to this plugin's WASM ABI. Resolve 
 
 ```ts
 import { transform } from "@swc/core";
-import { defaultPluginPath } from "@scarf005/ts-pattern-swc-plugin/transform";
+import { defaultPluginPath } from "@scarf005/swc-plugin-ts-pattern/transform";
 
 const result = await transform(source, {
   filename: "input.ts",
@@ -53,13 +53,13 @@ The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluat
 Install the plugin and ts-pattern:
 
 ```sh
-npm install ts-pattern @scarf005/ts-pattern-swc-plugin
+npm install ts-pattern @scarf005/swc-plugin-ts-pattern
 ```
 
 Preload the loader:
 
 ```sh
-node --import @scarf005/ts-pattern-swc-plugin/register ./foo.ts
+node --import @scarf005/swc-plugin-ts-pattern/register ./foo.ts
 ```
 
 ### Deno
@@ -67,13 +67,13 @@ node --import @scarf005/ts-pattern-swc-plugin/register ./foo.ts
 Use `import { match } from "ts-pattern"` with a `deno.json` import map, or `import { match } from "npm:ts-pattern@5.9.0"`. Run through the CLI:
 
 ```sh
-deno run -A jsr:@scarf005/ts-pattern-swc-plugin/run ./foo.ts
+deno run -A jsr:@scarf005/swc-plugin-ts-pattern/run ./foo.ts
 ```
 
 The CLI imports the entry as a module. Use preload when your entry relies on native main-module identity (`import.meta.main` or `require.main`).
 
 ```sh
-deno run -A --preload jsr:@scarf005/ts-pattern-swc-plugin/register ./foo.ts
+deno run -A --preload jsr:@scarf005/swc-plugin-ts-pattern/register ./foo.ts
 ```
 
 Native JSR imports download the package's WASM into a content-addressed local cache before registering the loader; downloads are limited to 64 MiB, damaged cache files are replaced atomically, and download or transform failures abort execution. This requires network, filesystem and native SWC permissions.
@@ -89,7 +89,7 @@ deno run -A --config examples/deno.jsonc --preload ./plugin/register.mjs ./examp
 ### Programmatic transform
 
 ```ts
-import { transformTsPattern } from "@scarf005/ts-pattern-swc-plugin/transform";
+import { transformTsPattern } from "@scarf005/swc-plugin-ts-pattern/transform";
 
 const result = await transformTsPattern(source, { filename: "foo.ts" });
 console.log(result.code);
@@ -97,7 +97,7 @@ console.log(result.code);
 
 `defaultPluginPath()` is asynchronous so it can materialize a remote JSR WASM. `transformTsPattern()` prepares it automatically. `transformTsPatternSync()` accepts the same options; for remote imports, first await `defaultPluginPath()` or pass an explicit `pluginPath`.
 
-Set `TS_PATTERN_SWC_PLUGIN_PATH` to use a custom-built WASM with the loader. For programmatic transforms, pass `pluginPath`. Restart the process after rebuilding a custom WASM: SWC caches loaded plugins for the process lifetime.
+Set `SWC_PLUGIN_TS_PATTERN_PATH` to use a custom-built WASM with the loader. For programmatic transforms, pass `pluginPath`. Restart the process after rebuilding a custom WASM: SWC caches loaded plugins for the process lifetime.
 
 ## Benchmark
 

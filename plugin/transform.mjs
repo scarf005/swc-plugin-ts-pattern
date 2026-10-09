@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const wasmUrl = new URL(
-  "./target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+  "./target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
   import.meta.url,
 )
 
@@ -73,7 +73,7 @@ const downloadPlugin = async () => {
     throw new Error(`Invalid plugin WASM: ${wasmUrl}`)
   }
   const digest = createHash("sha256").update(bytes).digest("hex")
-  const directory = join(tmpdir(), "ts-pattern-swc-plugin", "wasm")
+  const directory = join(tmpdir(), "swc-plugin-ts-pattern", "wasm")
   const path = join(directory, `${digest}.wasm.bin`)
   await mkdir(directory, { recursive: true, mode: 0o700 })
   let validCache = false
@@ -111,7 +111,7 @@ const cacheRootFor = (pluginPath) => {
   const { mtimeMs, size } = statSync(pluginPath)
   return join(
     tmpdir(),
-    "ts-pattern-swc-plugin",
+    "swc-plugin-ts-pattern",
     `${size}-${Math.trunc(mtimeMs)}`,
   )
 }

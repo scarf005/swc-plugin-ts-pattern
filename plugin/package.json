@@ -1,5 +1,5 @@
 {
-  "name": "@scarf005/ts-pattern-swc-plugin",
+  "name": "@scarf005/swc-plugin-ts-pattern",
   "version": "0.2.0-alpha.0",
   "description": "SWC plugin that compiles supported ts-pattern match expressions into plain JavaScript control flow",
   "license": "AGPL-3.0-only",
@@ -7,10 +7,10 @@
     "node": ">=24.0.0"
   },
   "type": "commonjs",
-  "main": "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+  "main": "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
   "exports": {
-    ".": "./target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
-    "./wasm": "./target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+    ".": "./target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
+    "./wasm": "./target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
     "./loader": {
       "types": "./loader.d.ts",
       "default": "./loader.mjs"
@@ -33,7 +33,7 @@
     "ts-pattern-swc": "run.mjs"
   },
   "files": [
-    "target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+    "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
     "loader.mjs",
     "register.mjs",
     "run.mjs",
@@ -45,7 +45,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "cargo build --release --target wasm32-wasip1 && cp target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm target/wasm32-wasip1/release/ts_pattern_swc_plugin.wasm.bin",
+    "build": "cargo build --release --target wasm32-wasip1 && cp target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
     "test": "cargo test && npm run build && npm run test:runtime",
     "test:runtime": "node --test tests/*.test.mjs",
     "prepack": "npm run build"
@@ -66,12 +66,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/scarf005/ts-pattern-swc-plugin.git"
+    "url": "git+https://github.com/scarf005/swc-plugin-ts-pattern.git"
   },
   "bugs": {
-    "url": "https://github.com/scarf005/ts-pattern-swc-plugin/issues"
+    "url": "https://github.com/scarf005/swc-plugin-ts-pattern/issues"
   },
-  "homepage": "https://github.com/scarf005/ts-pattern-swc-plugin#readme",
+  "homepage": "https://github.com/scarf005/swc-plugin-ts-pattern#readme",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
