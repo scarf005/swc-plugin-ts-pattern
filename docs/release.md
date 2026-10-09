@@ -13,12 +13,12 @@ git push origin main vX.Y.Z
 
 Replace `X.Y.Z` with the manifest version.
 
-The `Release` workflow publishes to both npm and JSR only from matching `v*` tags after the test job passes. Prerelease versions such as `X.Y.Z-alpha.N`, `X.Y.Z-beta.N`, and `X.Y.Z-rc.N` use the matching npm dist-tag; other versions use `latest`.
+The `Release` workflow publishes to JSR and stages the npm package only from matching `v*` tags after the test job passes. Approve the staged npm version with `npm stage approve <stage-id>` or on npmjs.com. Prerelease versions such as `X.Y.Z-alpha.N`, `X.Y.Z-beta.N`, and `X.Y.Z-rc.N` use the matching npm dist-tag; other versions use `latest`.
 
 Required repository setup:
 
-- npm: create `@scarf005/swc-plugin-ts-pattern`, then configure trusted publishing
-  for `.github/workflows/release.yml`, or add an `NPM_TOKEN` repository secret.
+- npm: publish the first version manually, then configure a stage-only trusted publisher
+  for `.github/workflows/release.yml` and disallow tokens.
 - JSR: create/claim `@scarf005/swc-plugin-ts-pattern` and authorize GitHub Actions
   OIDC for this repository.
 - GitHub: protect `main` by requiring the `Test` workflow check before merge.
