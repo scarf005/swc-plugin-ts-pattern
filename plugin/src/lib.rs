@@ -324,11 +324,13 @@ impl TsPatternTransformer {
         }
         self.const_bindings.extend(bindings);
 
-        let bindings = self.const_bindings.keys().cloned().collect();
-        module.visit_with(&mut MutationCollector {
-            bindings: &bindings,
-            mutated: &mut self.mutated_bindings,
-        });
+        let mut uses = BindingUses {
+            transformer: self,
+            in_pattern: false,
+            changed: HashSet::new(),
+        };
+        module.visit_with(&mut uses);
+        self.mutated_bindings = uses.changed;
     }
 
     fn resolve_pattern_expr<'a>(&'a self, expr: &'a Expr) -> &'a Expr {
@@ -1243,6 +1245,37 @@ impl TsPatternTransformer {
         }
     }
 
+    /// How many leading arguments of `call` are patterns: those of a `.with`
+    /// arm before its handler, of `P` APIs, and `isMatching`'s first.
+    fn pattern_arg_count(&self, call: &CallExpr) -> Option<usize> {
+        if self.is_imported_call(call, &self.is_matching_imports, "isMatching") {
+            return Some(1);
+        }
+        if let Some(("with", receiver)) = as_method_call(call) {
+            return self
+                .is_match_chain(receiver)
+                .then(|| call.args.len().saturating_sub(1));
+        }
+        match self.p_call_api(call)? {
+            PApi::Modifier(method, base, _) if !self.has_pattern_method(base, method) => None,
+            _ => Some(call.args.len()),
+        }
+    }
+
+    /// Whether `expr` is `match(...)` followed by arm calls.
+    fn is_match_chain(&self, mut expr: &Expr) -> bool {
+        while let Some(call) = as_call(expr) {
+            if self.is_imported_call(call, &self.match_imports, "match") {
+                return true;
+            }
+            let Some((_, receiver)) = as_method_call(call) else {
+                return false;
+            };
+            expr = receiver;
+        }
+        false
+    }
+
     /// Whether ts-pattern attaches `method` to the pattern `base` evaluates to.
     fn has_pattern_method(&self, base: &Expr, method: &str) -> bool {
         const CHAINABLE: &[&str] = &["optional", "and", "or", "select"];
@@ -1724,46 +1757,134 @@ impl TsPatternTransformer {
     }
 }
 
-struct MutationCollector<'a> {
-    bindings: &'a HashSet<Id>,
-    mutated: &'a mut HashSet<Id>,
+/// Finds const bindings whose value may change after initialization: any
+/// assigned through, and object or array literals referenced anywhere but in a
+/// pattern argument, where a callee could mutate them.
+struct BindingUses<'a> {
+    transformer: &'a TsPatternTransformer,
+    in_pattern: bool,
+    changed: HashSet<Id>,
 }
 
-impl Visit for MutationCollector<'_> {
-    fn visit_expr(&mut self, expr: &Expr) {
-        match expr {
-            Expr::Assign(assign) => self.mark_assign_target(&assign.left),
-            Expr::Update(update) => self.mark_expr(&update.arg),
-            Expr::Unary(unary) if unary.op == UnaryOp::Delete => self.mark_expr(&unary.arg),
+impl Visit for BindingUses<'_> {
+    fn visit_module_decl(&mut self, decl: &ModuleDecl) {
+        // Importers could mutate exported literals.
+        match decl {
+            ModuleDecl::ExportDecl(ExportDecl {
+                decl: Decl::Var(var),
+                ..
+            }) => {
+                for decl in &var.decls {
+                    if let Pat::Ident(ident) = &decl.name {
+                        self.escape(&ident.id);
+                    }
+                }
+            }
+            ModuleDecl::ExportNamed(NamedExport {
+                src: None,
+                specifiers,
+                ..
+            }) => {
+                for specifier in specifiers {
+                    if let ExportSpecifier::Named(ExportNamedSpecifier {
+                        orig: ModuleExportName::Ident(ident),
+                        ..
+                    }) = specifier
+                    {
+                        self.escape(ident);
+                    }
+                }
+            }
             _ => {}
         }
+        decl.visit_children_with(self);
+    }
+
+    fn visit_prop(&mut self, prop: &Prop) {
+        if let Prop::Shorthand(ident) = prop {
+            if !self.in_pattern {
+                self.escape(ident);
+            }
+        }
+        prop.visit_children_with(self);
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Ident(ident) => {
+                if !self.in_pattern {
+                    self.escape(ident);
+                }
+                return;
+            }
+            // Pattern literals and type assertions keep their context.
+            Expr::Object(_)
+            | Expr::Array(_)
+            | Expr::Paren(_)
+            | Expr::TsAs(_)
+            | Expr::TsConstAssertion(_)
+            | Expr::TsSatisfies(_) => {
+                expr.visit_children_with(self);
+                return;
+            }
+            Expr::Call(call) => {
+                if let Some(patterns) = self.transformer.pattern_arg_count(call) {
+                    let outer = std::mem::replace(&mut self.in_pattern, false);
+                    call.callee.visit_with(self);
+                    for (index, arg) in call.args.iter().enumerate() {
+                        self.in_pattern = index < patterns;
+                        arg.visit_with(self);
+                    }
+                    self.in_pattern = outer;
+                    return;
+                }
+            }
+            Expr::Assign(assign) => self.change_assign_target(&assign.left),
+            Expr::Update(update) => self.change_expr(&update.arg),
+            Expr::Unary(unary) if unary.op == UnaryOp::Delete => self.change_expr(&unary.arg),
+            _ => {}
+        }
+        let outer = std::mem::replace(&mut self.in_pattern, false);
         expr.visit_children_with(self);
+        self.in_pattern = outer;
     }
 }
 
-impl MutationCollector<'_> {
-    fn mark_assign_target(&mut self, target: &AssignTarget) {
+impl BindingUses<'_> {
+    fn escape(&mut self, ident: &Ident) {
+        let id = ident.to_id();
+        if self
+            .transformer
+            .const_bindings
+            .get(&id)
+            .is_some_and(is_mutable_literal)
+        {
+            self.changed.insert(id);
+        }
+    }
+
+    fn change_assign_target(&mut self, target: &AssignTarget) {
         match target {
-            AssignTarget::Simple(SimpleAssignTarget::Ident(ident)) => self.mark_id(ident.to_id()),
-            AssignTarget::Simple(SimpleAssignTarget::Member(member)) => self.mark_member(member),
+            AssignTarget::Simple(SimpleAssignTarget::Ident(ident)) => self.change(ident.to_id()),
+            AssignTarget::Simple(SimpleAssignTarget::Member(member)) => self.change_member(member),
             AssignTarget::Simple(_) | AssignTarget::Pat(_) => {}
         }
     }
 
-    fn mark_expr(&mut self, expr: &Expr) {
+    fn change_expr(&mut self, expr: &Expr) {
         match expr {
-            Expr::Ident(ident) => self.mark_id(ident.to_id()),
-            Expr::Member(member) => self.mark_member(member),
+            Expr::Ident(ident) => self.change(ident.to_id()),
+            Expr::Member(member) => self.change_member(member),
             _ => {}
         }
     }
 
-    fn mark_member(&mut self, member: &MemberExpr) {
+    fn change_member(&mut self, member: &MemberExpr) {
         let mut current = &*member.obj;
         loop {
             match current {
                 Expr::Ident(ident) => {
-                    self.mark_id(ident.to_id());
+                    self.change(ident.to_id());
                     return;
                 }
                 Expr::Member(member) => current = &member.obj,
@@ -1772,10 +1893,22 @@ impl MutationCollector<'_> {
         }
     }
 
-    fn mark_id(&mut self, id: Id) {
-        if self.bindings.contains(&id) {
-            self.mutated.insert(id);
+    fn change(&mut self, id: Id) {
+        if self.transformer.const_bindings.contains_key(&id) {
+            self.changed.insert(id);
         }
+    }
+}
+
+/// Whether a pattern value is an object or array that code could mutate.
+fn is_mutable_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Object(_) | Expr::Array(_) => true,
+        Expr::Paren(paren) => is_mutable_literal(&paren.expr),
+        Expr::TsAs(assertion) => is_mutable_literal(&assertion.expr),
+        Expr::TsConstAssertion(assertion) => is_mutable_literal(&assertion.expr),
+        Expr::TsSatisfies(assertion) => is_mutable_literal(&assertion.expr),
+        _ => false,
     }
 }
 
