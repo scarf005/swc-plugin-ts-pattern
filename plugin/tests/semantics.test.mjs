@@ -1059,3 +1059,27 @@ for (const declaration of ["arrow", "ternary", "initializer"]) {
     assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
   })
 }
+
+test("hoisted expression temporaries survive re-entrant matches", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, match, P } from "ts-pattern";
+    // The predicate re-enters the match before the outer test reads its
+    // temporary for \`child\` again.
+    const check = (node) => [
+      match(node)
+        .with({ child: { deeper: P.when((deeper) => { if (deeper) check(deeper); return true; }), tag: "x" } }, () => "ok")
+        .otherwise(() => "bad"),
+    ][0];
+    const holds = (node) =>
+      isMatching({ child: { deeper: P.when((deeper) => { if (deeper) holds(deeper); return true; }), tag: "x" } }, node);
+    export const run = () => {
+      const tree = { child: { deeper: { child: { deeper: null, tag: "y" } }, tag: "x" } };
+      return [check(tree), holds(tree)];
+    };
+  `,
+    ["ok", true],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+  assert.doesNotMatch(code, /\)\(undefined/, "function bodies declare the temporaries")
+})

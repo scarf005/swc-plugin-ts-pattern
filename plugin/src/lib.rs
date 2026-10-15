@@ -38,6 +38,9 @@ struct TsPatternTransformer {
     /// Temporaries that the current arm's tests assign; `arm_parts` declares
     /// them.
     pending_temps: RefCell<Vec<Ident>>,
+    /// Where expression temporaries can be declared: the innermost function
+    /// body, or `None` where a `let` cannot reach, e.g. parameter defaults.
+    hoist_scopes: Vec<Option<Vec<Ident>>>,
 }
 
 struct MatchChain {
@@ -184,18 +187,64 @@ impl VisitMut for TsPatternTransformer {
     }
 
     fn visit_mut_arrow_expr(&mut self, arrow: &mut ArrowExpr) {
-        arrow.params.visit_mut_with(self);
-        if let BlockStmtOrExpr::Expr(expr) = &mut *arrow.body {
-            match self.lower_match(expr, &Sink::Return) {
-                Lowered::Stmts(stmts) => {
-                    *arrow.body = BlockStmtOrExpr::BlockStmt(block_stmt(stmts));
-                    return;
+        self.with_hoist_scope(false, |this| arrow.params.visit_mut_with(this));
+        let temps = self.with_hoist_scope(true, |this| {
+            if let BlockStmtOrExpr::Expr(expr) = &mut *arrow.body {
+                match this.lower_match(expr, &Sink::Return) {
+                    Lowered::Stmts(stmts) => {
+                        *arrow.body = BlockStmtOrExpr::BlockStmt(block_stmt(stmts));
+                        return;
+                    }
+                    Lowered::InPlace => return,
+                    Lowered::NotMatch => {}
                 }
-                Lowered::InPlace => return,
-                Lowered::NotMatch => {}
             }
+            arrow.body.visit_mut_with(this);
+        });
+        if temps.is_empty() {
+            return;
         }
-        arrow.body.visit_mut_with(self);
+        let body = match std::mem::replace(
+            &mut *arrow.body,
+            BlockStmtOrExpr::BlockStmt(block_stmt(vec![])),
+        ) {
+            BlockStmtOrExpr::Expr(expr) => block_stmt(vec![return_stmt(*expr)]),
+            BlockStmtOrExpr::BlockStmt(block) => block,
+        };
+        *arrow.body = BlockStmtOrExpr::BlockStmt(declare_temps(temps, body));
+    }
+
+    fn visit_mut_function(&mut self, function: &mut Function) {
+        self.with_hoist_scope(false, |this| {
+            function.params.visit_mut_with(this);
+            function.decorators.visit_mut_with(this);
+        });
+        let temps = self.with_hoist_scope(true, |this| function.body.visit_mut_with(this));
+        if let Some(body) = function.body.take() {
+            function.body = Some(declare_temps(temps, body));
+        }
+    }
+
+    fn visit_mut_constructor(&mut self, constructor: &mut Constructor) {
+        self.with_hoist_scope(false, |this| constructor.params.visit_mut_with(this));
+        let temps = self.with_hoist_scope(true, |this| constructor.body.visit_mut_with(this));
+        if let Some(body) = constructor.body.take() {
+            constructor.body = Some(declare_temps(temps, body));
+        }
+    }
+
+    // Class fields, static blocks and accessors have no function body that
+    // `visit_mut_function` declares temporaries in.
+    fn visit_mut_class(&mut self, class: &mut Class) {
+        self.with_hoist_scope(false, |this| class.visit_mut_children_with(this));
+    }
+
+    fn visit_mut_getter_prop(&mut self, getter: &mut GetterProp) {
+        self.with_hoist_scope(false, |this| getter.visit_mut_children_with(this));
+    }
+
+    fn visit_mut_setter_prop(&mut self, setter: &mut SetterProp) {
+        self.with_hoist_scope(false, |this| setter.visit_mut_children_with(this));
     }
 }
 
@@ -448,14 +497,21 @@ impl TsPatternTransformer {
         if needs_prepared_expression(self, &chain) {
             return None;
         }
-        let test = self.compile_ternary_chain(chain, true)?;
-        Some(match call.args.len() {
-            1 => arrow_expr(
-                vec![Pat::Ident(param.into())],
-                BlockStmtOrExpr::Expr(Box::new(test)),
-            ),
-            _ => test,
-        })
+        if call.args.len() == 2 {
+            return self.compile_ternary_chain(chain, true);
+        }
+        // The returned predicate is a function of its own.
+        let mut test = None;
+        let temps =
+            self.with_hoist_scope(true, |this| test = this.compile_ternary_chain(chain, true));
+        let body = match temps.as_slice() {
+            [] => BlockStmtOrExpr::Expr(Box::new(test?)),
+            _ => BlockStmtOrExpr::BlockStmt(declare_temps(
+                temps,
+                block_stmt(vec![return_stmt(test?)]),
+            )),
+        };
+        Some(arrow_expr(vec![Pat::Ident(param.into())], body))
     }
 
     /// Returns `name` when `expr` resolves to `P.<name>`.
@@ -613,6 +669,21 @@ impl TsPatternTransformer {
     /// the parameters of an immediately invoked arrow.
     fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
         let (bindings, chain) = self.prepare_chain(chain);
+        if self.can_hoist() && matches!(chain.fallback, Fallback::Otherwise(_)) {
+            // `(input = ..., value = ..., test ? ... : ...)` evaluates in the
+            // same order as the arrow's arguments.
+            let body = self.compile_ternary_chain(chain, true)?;
+            let (temps, mut exprs): (Vec<_>, Vec<_>) = bindings
+                .into_iter()
+                .map(|(ident, value)| (ident.clone(), Box::new(assign_expr(ident, value))))
+                .unzip();
+            self.hoist(temps);
+            exprs.push(Box::new(body));
+            return Some(paren_expr(Expr::Seq(SeqExpr {
+                span: DUMMY_SP,
+                exprs,
+            })));
+        }
         let body = match chain.fallback {
             Fallback::Otherwise(_) => {
                 BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain, true)?))
@@ -873,8 +944,27 @@ impl TsPatternTransformer {
         Lowered::InPlace
     }
 
-    /// Lowers a chain to nested conditionals. Arms that bind captures need an
-    /// immediately invoked arrow, allowed only with `allow_arrows`.
+    /// Runs `visit` in a new declaration scope and returns the temporaries
+    /// hoisted into it.
+    fn with_hoist_scope(&mut self, declarable: bool, visit: impl FnOnce(&mut Self)) -> Vec<Ident> {
+        self.hoist_scopes.push(declarable.then(Vec::new));
+        visit(self);
+        self.hoist_scopes.pop().flatten().unwrap_or_default()
+    }
+
+    fn can_hoist(&self) -> bool {
+        matches!(self.hoist_scopes.last(), Some(Some(_)))
+    }
+
+    fn hoist(&mut self, temps: Vec<Ident>) {
+        if let Some(Some(scope)) = self.hoist_scopes.last_mut() {
+            scope.extend(temps);
+        }
+    }
+
+    /// Lowers a chain to nested conditionals. Arms that bind captures declare
+    /// them in the enclosing function or, with `allow_arrows`, in an
+    /// immediately invoked arrow; otherwise lowering fails.
     fn compile_ternary_chain(&mut self, chain: MatchChain, allow_arrows: bool) -> Option<Expr> {
         if !can_inline_input(&chain.input) || !matches!(chain.fallback, Fallback::Otherwise(_)) {
             return None;
@@ -885,6 +975,10 @@ impl TsPatternTransformer {
             return None;
         };
         let mut expression = handler_result(fallback, vec![input.clone()]);
+        // Each function activation has its own temporaries, so re-entrant
+        // matches cannot overwrite them.
+        let hoist = allow_arrows && self.can_hoist();
+        let mut hoisted = Vec::new();
 
         for arm in chain.arms.into_iter().rev() {
             let (test, handler_input, captures) =
@@ -895,6 +989,9 @@ impl TsPatternTransformer {
                 expression,
             );
             expression = if captures.is_empty() {
+                branch
+            } else if hoist {
+                hoisted.extend(captures);
                 branch
             } else if !allow_arrows {
                 return None;
@@ -912,6 +1009,7 @@ impl TsPatternTransformer {
             };
         }
 
+        self.hoist(hoisted);
         Some(expression)
     }
 
@@ -2775,6 +2873,14 @@ fn break_stmt() -> Stmt {
         span: DUMMY_SP,
         label: None,
     })
+}
+
+/// Declares `temps` at the start of `body`.
+fn declare_temps(temps: Vec<Ident>, mut body: BlockStmt) -> BlockStmt {
+    if !temps.is_empty() {
+        body.stmts.splice(0..0, temps.into_iter().map(let_decl));
+    }
+    body
 }
 
 fn let_decl(ident: Ident) -> Stmt {
