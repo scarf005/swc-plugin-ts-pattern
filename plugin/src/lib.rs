@@ -341,62 +341,47 @@ impl TsPatternTransformer {
 
     fn parse_match_chain(&self, expr: &Expr) -> Option<MatchChain> {
         let call = as_call(expr)?;
-        let (method, receiver) = as_method_call(call)?;
-
-        let fallback = match method.as_str() {
-            "otherwise" => {
-                if call.args.len() != 1 {
-                    return None;
-                }
-                Fallback::Otherwise(call.args[0].expr.clone())
-            }
-            "exhaustive" => {
-                if !call.args.is_empty() {
-                    return None;
-                }
-                Fallback::Exhaustive
-            }
+        let (method, mut receiver) = as_method_call(call)?;
+        let fallback = match (method, call.args.as_slice()) {
+            ("otherwise", [handler]) => Some(&handler.expr),
+            ("exhaustive", []) => None,
             _ => return None,
         };
 
-        let (input, arms) = self.collect_arms(receiver)?;
-        if arms.is_empty() {
+        // Validate the whole chain by reference before cloning any of it.
+        let mut arm_calls = Vec::new();
+        let input = loop {
+            let call = as_call(receiver)?;
+            if self.is_imported_call(call, &self.match_imports, "match") {
+                let [input] = call.args.as_slice() else {
+                    return None;
+                };
+                break &input.expr;
+            }
+            let (method, next) = as_method_call(call)?;
+            arm_calls.push((method, call));
+            receiver = next;
+        };
+        if arm_calls.is_empty() {
             return None;
         }
+        let arms = arm_calls
+            .into_iter()
+            .rev()
+            .map(|(method, call)| match method {
+                "with" => parse_with_arm(call),
+                "when" => parse_when_arm(call),
+                _ => None,
+            })
+            .collect::<Option<_>>()?;
 
         Some(MatchChain {
-            input,
+            input: input.clone(),
             arms,
-            fallback,
+            fallback: fallback.map_or(Fallback::Exhaustive, |handler| {
+                Fallback::Otherwise(handler.clone())
+            }),
         })
-    }
-
-    fn collect_arms(&self, expr: &Expr) -> Option<(Box<Expr>, Vec<MatchArm>)> {
-        let call = as_call(expr)?;
-
-        if self.is_imported_call(call, &self.match_imports, "match") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some((call.args[0].expr.clone(), Vec::new()));
-        }
-
-        let (method, receiver) = as_method_call(call)?;
-        let (input, mut arms) = self.collect_arms(receiver)?;
-
-        match method.as_str() {
-            "with" => {
-                let arm = parse_with_arm(call)?;
-                arms.push(arm);
-            }
-            "when" => {
-                let arm = parse_when_arm(call)?;
-                arms.push(arm);
-            }
-            _ => return None,
-        }
-
-        Some((input, arms))
     }
 
     /// Whether `call` calls the ts-pattern export `name`, imported as one of
@@ -2226,7 +2211,7 @@ fn has_spread_arg(call: &CallExpr) -> bool {
     call.args.iter().any(|arg| arg.spread.is_some())
 }
 
-fn as_method_call(call: &CallExpr) -> Option<(String, &Expr)> {
+fn as_method_call(call: &CallExpr) -> Option<(&str, &Expr)> {
     let Callee::Expr(callee) = &call.callee else {
         return None;
     };
@@ -2234,7 +2219,7 @@ fn as_method_call(call: &CallExpr) -> Option<(String, &Expr)> {
         return None;
     };
 
-    Some((member_name(member)?.to_string(), &member.obj))
+    Some((member_name(member)?, &member.obj))
 }
 
 fn member_name(member: &MemberExpr) -> Option<&str> {
