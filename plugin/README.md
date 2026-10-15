@@ -589,7 +589,7 @@ summary
 
 ## Supported input
 
-The transformer handles chains that start from `match(value)` imported from `ts-pattern` and end in `.otherwise(handler)` or `.exhaustive()`.
+The transformer handles chains that start from `match(value)` imported from `ts-pattern` and end in `.otherwise(handler)` or `.exhaustive()`. It also compiles `isMatching(pattern)` and `isMatching(pattern, value)` when the pattern holds only literals and side-effect-free inline callbacks and `value` is an identifier or literal.
 
 Supported patterns:
 

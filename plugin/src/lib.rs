@@ -25,6 +25,7 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
 struct TsPatternTransformer {
     unresolved_ctxt: SyntaxContext,
     match_imports: HashSet<Id>,
+    is_matching_imports: HashSet<Id>,
     p_imports: HashSet<Id>,
     namespaces: HashSet<Id>,
     const_bindings: HashMap<Id, Expr>,
@@ -152,6 +153,8 @@ impl VisitMut for TsPatternTransformer {
                 Some(compiled) => *expr = compiled,
                 None => self.needs_non_exhaustive_error_import = pending_import_before,
             }
+        } else if let Some(compiled) = self.compile_is_matching(expr) {
+            *expr = compiled;
         }
     }
 
@@ -195,6 +198,9 @@ impl TsPatternTransformer {
                         match imported.as_str() {
                             "match" => {
                                 self.match_imports.insert(named.local.to_id());
+                            }
+                            "isMatching" => {
+                                self.is_matching_imports.insert(named.local.to_id());
                             }
                             "P" | "Pattern" => {
                                 self.p_imports.insert(named.local.to_id());
@@ -367,7 +373,7 @@ impl TsPatternTransformer {
     fn collect_arms(&self, expr: &Expr) -> Option<(Box<Expr>, Vec<MatchArm>)> {
         let call = as_call(expr)?;
 
-        if self.is_match_call(call) {
+        if self.is_imported_call(call, &self.match_imports, "match") {
             if call.args.len() != 1 {
                 return None;
             }
@@ -392,15 +398,59 @@ impl TsPatternTransformer {
         Some((input, arms))
     }
 
-    fn is_match_call(&self, call: &CallExpr) -> bool {
+    /// Whether `call` calls the ts-pattern export `name`, imported as one of
+    /// `imports` or through a namespace.
+    fn is_imported_call(&self, call: &CallExpr, imports: &HashSet<Id>, name: &str) -> bool {
         match &call.callee {
             Callee::Expr(callee) => match &**callee {
-                Expr::Ident(ident) => self.match_imports.contains(&ident.to_id()),
-                Expr::Member(member) => self.is_namespace_member(member, "match"),
+                Expr::Ident(ident) => imports.contains(&ident.to_id()),
+                Expr::Member(member) => self.is_namespace_member(member, name),
                 _ => false,
             },
             _ => false,
         }
+    }
+
+    /// Lowers `isMatching(pattern, value)` and `isMatching(pattern)` like
+    /// `match(value).with(pattern, () => true).otherwise(() => false)`. Only
+    /// patterns that evaluate nothing compile, so argument order is kept.
+    fn compile_is_matching(&mut self, expr: &Expr) -> Option<Expr> {
+        let call = as_call(expr)?;
+        if !self.is_imported_call(call, &self.is_matching_imports, "isMatching") {
+            return None;
+        }
+        let param = private_ident!("_tsPatternValue");
+        let (pattern, input) = match call.args.as_slice() {
+            [pattern] => (&pattern.expr, Box::new(ident_expr(&param))),
+            [pattern, value] => (&pattern.expr, value.expr.clone()),
+            _ => return None,
+        };
+        let constant = |value| {
+            Box::new(arrow_expr(
+                vec![],
+                BlockStmtOrExpr::Expr(Box::new(bool_lit(value))),
+            ))
+        };
+        let chain = MatchChain {
+            input,
+            arms: vec![MatchArm {
+                patterns: vec![pattern.clone()],
+                guard: None,
+                handler: constant(true),
+            }],
+            fallback: Fallback::Otherwise(constant(false)),
+        };
+        if needs_prepared_expression(self, &chain) {
+            return None;
+        }
+        let test = self.compile_ternary_chain(chain)?;
+        Some(match call.args.len() {
+            1 => arrow_expr(
+                vec![Pat::Ident(param.into())],
+                BlockStmtOrExpr::Expr(Box::new(test)),
+            ),
+            _ => test,
+        })
     }
 
     /// Returns `name` when `expr` resolves to `P.<name>`.
