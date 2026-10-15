@@ -795,3 +795,30 @@ for (const declaration of ["arrow", "initializer"]) {
     assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
   })
 }
+
+for (const declaration of ["arrow", "initializer"]) {
+  for (const [selector, handler] of [["P.select()", "(value) => value"], ["P.select('value')", "({ value }) => value"]]) {
+    test(`${declaration} ${selector} passes the tested getter value to the handler`, async () => {
+      const match = `match(input)
+        .with({ kind: "a", value: ${selector} }, ${handler})
+        .with({ kind: "b" }, () => 0)`
+      const code = await assertEquivalent(
+        `
+        import { match, P } from "ts-pattern";
+        export const run = () => {
+          let reads = 0;
+          const input = { kind: "a", get value() { return ++reads; } };
+          const select = ${
+          declaration === "arrow"
+            ? `(input) => ${match}.otherwise(() => -1)`
+            : `(input) => { const result = ${match}.exhaustive(); return result; }`
+        };
+          return [select(input), reads];
+        };
+      `,
+        [1, 1],
+      )
+      assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+    })
+  }
+}
