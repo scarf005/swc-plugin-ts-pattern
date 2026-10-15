@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{LazyLock, Mutex},
-};
+use std::collections::{HashMap, HashSet};
 
 use swc_core::{
     common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
@@ -12,9 +9,6 @@ use swc_core::{
     },
     plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
 };
-
-static PRIVATE_IDENT_COUNTS: LazyLock<Mutex<HashMap<String, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
@@ -27,6 +21,7 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
     program
 }
 
+#[derive(Default)]
 struct TsPatternTransformer {
     unresolved_ctxt: SyntaxContext,
     match_imports: HashSet<Id>,
@@ -36,22 +31,6 @@ struct TsPatternTransformer {
     mutated_bindings: HashSet<Id>,
     non_exhaustive_error: Option<Expr>,
     needs_non_exhaustive_error_import: bool,
-}
-
-impl Default for TsPatternTransformer {
-    fn default() -> Self {
-        PRIVATE_IDENT_COUNTS.lock().unwrap().clear();
-        Self {
-            unresolved_ctxt: SyntaxContext::empty(),
-            match_imports: HashSet::new(),
-            p_imports: HashSet::new(),
-            namespaces: HashSet::new(),
-            const_bindings: HashMap::new(),
-            mutated_bindings: HashSet::new(),
-            non_exhaustive_error: None,
-            needs_non_exhaustive_error_import: false,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -2861,20 +2840,8 @@ fn single_object_prop_with_object_value(pattern: &Expr) -> Option<(PropName, &Ex
         .then_some((key_value.key.clone(), &key_value.value))
 }
 
-fn fresh_private_ident(prefix: &str) -> Ident {
-    let mut counts = PRIVATE_IDENT_COUNTS.lock().unwrap();
-    let count = counts.entry(prefix.to_string()).or_default();
-    let name = if *count == 0 {
-        prefix.to_string()
-    } else {
-        format!("{prefix}_{count}")
-    };
-    *count += 1;
-    Ident::new(name.into(), DUMMY_SP, Default::default())
-}
-
 fn private_ident_for_index(prefix: &str, index: usize) -> Ident {
-    fresh_private_ident(&format!("{prefix}{index}"))
+    private_ident!(DUMMY_SP, format!("{prefix}{index}"))
 }
 
 fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
@@ -2893,11 +2860,7 @@ fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
         None => "Value".to_string(),
     };
 
-    Ident::new(
-        format!("{prefix}{suffix}").into(),
-        DUMMY_SP,
-        Default::default(),
-    )
+    private_ident!(DUMMY_SP, format!("{prefix}{suffix}"))
 }
 
 fn common_switch_path(arms: &[MatchArm]) -> Option<Vec<PropName>> {
