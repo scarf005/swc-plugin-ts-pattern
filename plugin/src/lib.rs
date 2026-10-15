@@ -522,15 +522,19 @@ impl TsPatternTransformer {
     }
 
     fn compile_arrow_match_stmts(&mut self, chain: MatchChain) -> Option<Vec<Stmt>> {
-        if needs_prepared_expression(self, &chain) {
-            return Some(vec![return_stmt(self.compile_prepared_expression(chain)?)]);
-        }
-
+        let (mut stmts, chain) = self.snapshot_chain(chain);
         if chain.arms.iter().all(is_switchable_arm) {
-            return Some(self.compile_switch_stmts(chain));
+            stmts.extend(self.compile_switch_stmts(chain));
+        } else {
+            stmts.extend(self.compile_body(
+                &Sink::Return,
+                &MatchInputs::new(*chain.input),
+                chain.arms,
+                chain.fallback,
+                false,
+            )?);
         }
-
-        self.compile_return_stmts(chain)
+        Some(stmts)
     }
 
     fn compile_chain(&mut self, chain: MatchChain) -> Option<Expr> {
@@ -540,79 +544,96 @@ impl TsPatternTransformer {
         self.compile_ternary_chain(chain)
     }
 
-    fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
-        let input_ident = private_ident!("_tsPatternInput");
-        let mut params = vec![input_ident.clone()];
-        let mut args = vec![*chain.input.clone()];
+    /// Evaluates the input and the values the chain's patterns and callbacks
+    /// evaluate once, in source order, into the returned bindings, and
+    /// rewrites the chain to read them.
+    fn prepare_chain(&self, chain: MatchChain) -> (Vec<(Ident, Expr)>, MatchChain) {
+        let input = private_ident!("_tsPatternInput");
+        let mut params = vec![input.clone()];
+        let mut args = vec![*chain.input];
         let mut arms = Vec::with_capacity(chain.arms.len());
-
-        for (arm_index, mut arm) in chain.arms.into_iter().enumerate() {
+        for arm in chain.arms {
             let mut patterns = Vec::with_capacity(arm.patterns.len());
             for pattern in arm.patterns {
                 let mut pattern = self.resolve_pattern_expr(&pattern).clone();
                 prepare_pattern_expr(self, &mut pattern, &mut params, &mut args);
                 patterns.push(Box::new(pattern));
             }
-
-            let guard = arm.guard.take().map(|guard| {
-                let ident = private_ident_for_index("_tsPatternGuard", arm_index);
-                params.push(ident.clone());
-                args.push(*guard);
-                Box::new(ident_expr(&ident))
-            });
-            let handler_ident = private_ident_for_index("_tsPatternHandler", arm_index);
-            params.push(handler_ident.clone());
-            args.push(*arm.handler);
-
+            let guard = arm
+                .guard
+                .map(|guard| prepare_callback(guard, "_tsPatternGuard", &mut params, &mut args));
+            let handler =
+                prepare_callback(arm.handler, "_tsPatternHandler", &mut params, &mut args);
             arms.push(MatchArm {
                 patterns,
                 guard,
-                handler: Box::new(ident_expr(&handler_ident)),
+                handler,
             });
         }
-
         let fallback = match chain.fallback {
-            Fallback::Otherwise(handler) => {
-                let ident = private_ident!("_tsPatternOtherwise");
-                params.push(ident.clone());
-                args.push(*handler);
-                Fallback::Otherwise(Box::new(ident_expr(&ident)))
-            }
+            Fallback::Otherwise(handler) => Fallback::Otherwise(prepare_callback(
+                handler,
+                "_tsPatternOtherwise",
+                &mut params,
+                &mut args,
+            )),
             fallback => fallback,
         };
+        let chain = MatchChain {
+            input: Box::new(ident_expr(&input)),
+            arms,
+            fallback,
+        };
+        (params.into_iter().zip(args).collect(), chain)
+    }
 
-        let input = ident_expr(&input_ident);
-        let body = match fallback {
+    /// Declares the input, and anything preparation evaluates, as constants.
+    fn snapshot_chain(&self, chain: MatchChain) -> (Vec<Stmt>, MatchChain) {
+        let (bindings, chain) = if needs_prepared_expression(self, &chain) {
+            self.prepare_chain(chain)
+        } else {
+            let input = private_ident!("_tsPatternInput");
+            let bindings = vec![(input.clone(), *chain.input)];
+            let input = Box::new(ident_expr(&input));
+            (bindings, MatchChain { input, ..chain })
+        };
+        let stmts = bindings
+            .into_iter()
+            .map(|(ident, value)| const_stmt(ident, value))
+            .collect();
+        (stmts, chain)
+    }
+
+    /// An expression cannot declare constants, so prepared bindings become
+    /// the parameters of an immediately invoked arrow.
+    fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
+        let (bindings, chain) = self.prepare_chain(chain);
+        let body = match chain.fallback {
             Fallback::Otherwise(_) => {
-                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(MatchChain {
-                    input: Box::new(input),
-                    arms,
-                    fallback,
-                })?))
+                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain)?))
             }
             fallback => BlockStmtOrExpr::BlockStmt(block_stmt(self.compile_body(
                 &Sink::Return,
-                &MatchInputs::new(input),
-                arms,
+                &MatchInputs::new(*chain.input),
+                chain.arms,
                 fallback,
                 false,
             )?)),
         };
-        let params = params
+        let (params, args) = bindings
             .into_iter()
-            .map(|ident| Pat::Ident(ident.into()))
-            .collect();
+            .map(|(ident, value)| (Pat::Ident(ident.into()), value))
+            .unzip();
         Some(call_expr(paren_expr(arrow_expr(params, body)), args))
     }
 
+    /// Lowers literal-only arms on a snapshotted input to a `switch`.
     fn compile_switch_stmts(&mut self, chain: MatchChain) -> Vec<Stmt> {
-        let input_ident = private_ident!("_tsPatternInput");
-        let input_expr = ident_expr(&input_ident);
+        let input = *chain.input;
         let mut cases = Vec::new();
 
         for arm in chain.arms {
-            let handler_call =
-                handler_result(arm.handler, vec![input_expr.clone(), input_expr.clone()]);
+            let handler_call = handler_result(arm.handler, vec![input.clone(), input.clone()]);
             let mut arm_patterns = arm.patterns.into_iter().peekable();
 
             while let Some(pattern) = arm_patterns.next() {
@@ -626,49 +647,21 @@ impl TsPatternTransformer {
             }
         }
 
-        let fallback = self.fallback_stmt(&Sink::Return, chain.fallback, input_expr);
+        let fallback = self.fallback_stmt(&Sink::Return, chain.fallback, input.clone());
         cases.push(switch_case(None, vec![fallback]));
-
-        vec![
-            const_stmt(input_ident.clone(), *chain.input),
-            switch_stmt(ident_expr(&input_ident), cases),
-        ]
-    }
-
-    fn compile_return_stmts(&mut self, chain: MatchChain) -> Option<Vec<Stmt>> {
-        let input_ident = private_ident!("_tsPatternInput");
-        let input_expr = ident_expr(&input_ident);
-        let mut stmts = vec![const_stmt(input_ident, *chain.input)];
-        stmts.extend(self.compile_body(
-            &Sink::Return,
-            &MatchInputs::new(input_expr),
-            chain.arms,
-            chain.fallback,
-            false,
-        )?);
-        Some(stmts)
+        vec![switch_stmt(input, cases)]
     }
 
     fn compile_assign_match_stmts(&mut self, target: Expr, chain: MatchChain) -> Option<Vec<Stmt>> {
-        if needs_prepared_expression(self, &chain) {
-            return Some(vec![assign_stmt(
-                target,
-                self.compile_prepared_expression(chain)?,
-            )]);
-        }
-
-        let (input_expr, mut stmts) = if can_inline_input(&chain.input) {
-            (*chain.input, Vec::new())
-        } else {
-            let input_ident = private_ident!("_tsPatternInput");
-            (
-                ident_expr(&input_ident),
-                vec![const_stmt(input_ident, *chain.input)],
-            )
-        };
+        let (mut stmts, chain) =
+            if can_inline_input(&chain.input) && !needs_prepared_expression(self, &chain) {
+                (Vec::new(), chain)
+            } else {
+                self.snapshot_chain(chain)
+            };
         stmts.extend(self.compile_body(
             &Sink::Assign(target),
-            &MatchInputs::new(input_expr),
+            &MatchInputs::new(*chain.input),
             chain.arms,
             chain.fallback,
             false,
@@ -1728,6 +1721,23 @@ fn prepare_pattern_expr(
         },
         _ => {}
     }
+}
+
+/// Moves a non-function callback into a prepared binding. Creating a function
+/// has no effects, so function expressions stay inline.
+fn prepare_callback(
+    callback: Box<Expr>,
+    name: &str,
+    params: &mut Vec<Ident>,
+    args: &mut Vec<Expr>,
+) -> Box<Expr> {
+    if is_function_expr(&callback) {
+        return callback;
+    }
+    let ident = private_ident!(DUMMY_SP, name);
+    params.push(ident.clone());
+    args.push(*callback);
+    Box::new(ident_expr(&ident))
 }
 
 fn capture_prepared_value(expr: &mut Expr, params: &mut Vec<Ident>, args: &mut Vec<Expr>) {
@@ -3530,6 +3540,22 @@ const result = match(input).with(P.record(P.string.select(), P.number), (keys) =
         assert!(output.contains("Reflect.ownKeys"), "{output}");
         assert!(output.contains(".join"), "{output}");
         assert!(!output.contains("match(input).with"), "{output}");
+    }
+
+    #[test]
+    fn prepares_statement_matches_as_constants_with_inline_handlers() {
+        let output = transform(
+            r#"import { match, P } from "ts-pattern";
+export const run = (input: unknown) => match(input).with(P.instanceOf(Date), () => "date").otherwise(handle);"#,
+        );
+
+        assert!(output.contains("const _tsPatternValue = Date;"), "{output}");
+        assert!(
+            output.contains("const _tsPatternOtherwise = handle;"),
+            "{output}"
+        );
+        assert!(output.contains("return \"date\""), "{output}");
+        assert!(!output.contains(")(input"), "{output}");
     }
 
     #[test]
