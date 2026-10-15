@@ -135,6 +135,13 @@ struct SelectionBinding {
 impl VisitMut for TsPatternTransformer {
     fn visit_mut_module(&mut self, module: &mut Module) {
         self.collect_imports(module);
+        if self.match_imports.is_empty()
+            && self.is_matching_imports.is_empty()
+            && self.namespaces.is_empty()
+        {
+            // Nothing in this module can compile.
+            return;
+        }
         self.collect_const_bindings(module);
         module.visit_mut_children_with(self);
         if self.needs_non_exhaustive_error_import {
@@ -227,36 +234,28 @@ impl TsPatternTransformer {
         }
     }
 
+    /// Records module-level `const` patterns that are safe to inline.
     fn collect_const_bindings(&mut self, module: &Module) {
-        let mut push_binding = |name: &Pat, init: &Option<Box<Expr>>| {
-            let Pat::Ident(ident) = name else {
-                return;
-            };
-            let Some(init) = init else {
-                return;
-            };
-            self.const_bindings
-                .insert(ident.id.to_id(), (**init).clone());
-        };
-
-        for item in &module.body {
-            match item {
-                ModuleItem::Stmt(Stmt::Decl(Decl::Var(var))) if var.kind == VarDeclKind::Const => {
-                    for decl in &var.decls {
-                        push_binding(&decl.name, &decl.init);
-                    }
+        let declarators = module.body.iter().flat_map(|item| match item {
+            ModuleItem::Stmt(Stmt::Decl(Decl::Var(var)))
+            | ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+                decl: Decl::Var(var),
+                ..
+            })) if var.kind == VarDeclKind::Const => var.decls.as_slice(),
+            _ => &[],
+        });
+        let bindings = declarators
+            .filter_map(|decl| match (&decl.name, &decl.init) {
+                (Pat::Ident(ident), Some(init)) if self.safe_const_pattern(init) => {
+                    Some((ident.id.to_id(), (**init).clone()))
                 }
-                ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
-                    decl: Decl::Var(var),
-                    ..
-                })) if var.kind == VarDeclKind::Const => {
-                    for decl in &var.decls {
-                        push_binding(&decl.name, &decl.init);
-                    }
-                }
-                _ => {}
-            }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if bindings.is_empty() {
+            return;
         }
+        self.const_bindings.extend(bindings);
 
         let bindings = self.const_bindings.keys().cloned().collect();
         module.visit_with(&mut MutationCollector {
@@ -273,12 +272,7 @@ impl TsPatternTransformer {
                 Expr::TsAs(assertion) => &assertion.expr,
                 Expr::TsSatisfies(assertion) => &assertion.expr,
                 Expr::Ident(ident) => match self.const_bindings.get(&ident.to_id()) {
-                    Some(next)
-                        if !self.mutated_bindings.contains(&ident.to_id())
-                            && self.safe_const_pattern(next) =>
-                    {
-                        next
-                    }
+                    Some(next) if !self.mutated_bindings.contains(&ident.to_id()) => next,
                     _ => return current,
                 },
                 _ => return current,
