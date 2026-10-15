@@ -768,3 +768,30 @@ test("failed transforms do not leave speculative error imports", async () => {
   )
   assert.doesNotMatch(code, /NonExhaustiveError/)
 })
+
+for (const declaration of ["arrow", "initializer"]) {
+  test(`${declaration} sibling cases cache equal nested prefixes in separate bindings`, async () => {
+    const match = `match(input)
+      .with({ type: "a", data: { k: "1" } }, () => "a1")
+      .with({ type: "a", data: { k: "2" } }, () => "a2")
+      .with({ type: "b", data: { k: "1" } }, () => "b1")
+      .with({ type: "b", data: { k: "2" } }, () => "b2")`
+    const code = await assertEquivalent(
+      `
+      import { match } from "ts-pattern";
+      const select = ${
+        declaration === "arrow"
+          ? `(input) => ${match}.otherwise(() => "none")`
+          : `(input) => { try { const result = ${match}.exhaustive(); return result; } catch { return "none"; } }`
+      };
+      export const run = () => [
+        select({ type: "a", data: { k: "2" } }),
+        select({ type: "b", data: { k: "1" } }),
+        select({ type: "b", data: {} }),
+      ];
+    `,
+      ["a2", "b1", "none"],
+    )
+    assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+  })
+}
