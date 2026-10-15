@@ -2845,24 +2845,49 @@ fn and(left: Expr, right: Expr) -> Expr {
     }
 }
 
-/// `left && right` that evaluates both operands.
+/// `left && right` that evaluates both operands. Callers use the result only
+/// as a condition.
 fn ordered_and(left: Expr, right: Expr) -> Expr {
-    ordered(left, right, and)
+    ordered(left, right, and, BinaryOp::BitAnd)
 }
 
-/// `left || right` that evaluates both operands.
+/// `left || right` that evaluates both operands. Callers use the result only
+/// as a condition.
 fn ordered_or(left: Expr, right: Expr) -> Expr {
-    ordered(left, right, or)
+    ordered(left, right, or, BinaryOp::BitOr)
 }
 
-fn ordered(left: Expr, right: Expr, op: fn(Expr, Expr) -> Expr) -> Expr {
-    let left_ident = private_ident!("_tsPatternLeftMatch");
-    let right_ident = private_ident!("_tsPatternRightMatch");
-    iife(vec![
-        const_stmt(left_ident.clone(), left),
-        const_stmt(right_ident.clone(), right),
-        return_stmt(op(ident_expr(&left_ident), ident_expr(&right_ident))),
-    ])
+fn ordered(left: Expr, right: Expr, op: fn(Expr, Expr) -> Expr, eager: BinaryOp) -> Expr {
+    // Short-circuiting may skip only an operand whose evaluation is unobservable.
+    if is_unobservable(&right) {
+        return op(left, right);
+    }
+    let boolean = |expr| unary(UnaryOp::Bang, unary(UnaryOp::Bang, paren_expr(expr)));
+    bin(eager, boolean(left), boolean(right))
+}
+
+/// Whether evaluating `expr` cannot run user code: it only reads bindings and
+/// literals through operators that never coerce objects.
+fn is_unobservable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(_) | Expr::Lit(_) => true,
+        Expr::Paren(paren) => is_unobservable(&paren.expr),
+        Expr::Unary(unary) => {
+            matches!(unary.op, UnaryOp::TypeOf | UnaryOp::Bang | UnaryOp::Void)
+                && is_unobservable(&unary.arg)
+        }
+        Expr::Bin(bin) => {
+            matches!(
+                bin.op,
+                BinaryOp::EqEqEq | BinaryOp::NotEqEq | BinaryOp::LogicalAnd | BinaryOp::LogicalOr
+            ) && is_unobservable(&bin.left)
+                && is_unobservable(&bin.right)
+        }
+        Expr::Cond(cond) => {
+            is_unobservable(&cond.test) && is_unobservable(&cond.cons) && is_unobservable(&cond.alt)
+        }
+        _ => false,
+    }
 }
 
 fn iterable_every(iterable: Expr, left: Pat, test: Expr) -> Expr {
