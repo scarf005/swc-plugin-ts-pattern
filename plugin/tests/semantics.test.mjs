@@ -822,3 +822,21 @@ for (const declaration of ["arrow", "initializer"]) {
     })
   }
 }
+
+for (const key of ["P.string", "P.string.select('key')"]) {
+  test(`record ${key} keys keep each named value selection separate`, async () => {
+    const code = await assertEquivalent(
+      `
+      import { match, P } from "ts-pattern";
+      export const run = () =>
+        match({ x: { a: 1, b: 2 }, y: { a: 3, b: 4 } })
+          .with(P.record(${key}, { a: P.select("a"), b: P.select("b") }), (selected) => selected)
+          .otherwise(() => null);
+    `,
+      key === "P.string"
+        ? { a: [1, 3], b: [2, 4] }
+        : { key: ["x", "y"], a: [1, 3], b: [2, 4] },
+    )
+    assert.doesNotMatch(code, /\.with\(/)
+  })
+}
