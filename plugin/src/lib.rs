@@ -57,6 +57,17 @@ enum Fallback {
     Exhaustive,
 }
 
+/// A `P` API reference, after resolving const aliases.
+#[derive(Clone, Copy)]
+enum PApi<'a> {
+    /// `P.name`
+    Member(&'a str),
+    /// `P.name(...)`
+    Call(&'a str, &'a CallExpr),
+    /// `P.base.method(...)`
+    Chain(&'a str, &'a str, &'a CallExpr),
+}
+
 #[derive(Clone, Default)]
 struct SelectionBinding {
     name: Option<String>,
@@ -346,53 +357,41 @@ impl TsPatternTransformer {
         }
     }
 
-    fn is_p_member(&self, expr: &Expr, name: &str) -> bool {
-        let expr = self.resolve_pattern_expr(expr);
-        let Expr::Member(member) = expr else {
-            return false;
+    /// Returns `name` when `expr` resolves to `P.<name>`.
+    fn p_member<'a>(&'a self, expr: &'a Expr) -> Option<&'a str> {
+        let Expr::Member(member) = self.resolve_pattern_expr(expr) else {
+            return None;
         };
-
-        if member_name(member) != Some(name) {
-            return false;
-        }
-
-        match &*member.obj {
+        let is_p = match &*member.obj {
             Expr::Ident(ident) => self.p_imports.contains(&ident.to_id()),
             Expr::Member(parent) => self.is_namespace_member(parent, "P"),
             _ => false,
+        };
+        is_p.then(|| member_name(member)).flatten()
+    }
+
+    fn p_api<'a>(&'a self, expr: &'a Expr) -> Option<PApi<'a>> {
+        match self.resolve_pattern_expr(expr) {
+            Expr::Call(call) => self.p_call_api(call),
+            expr => self.p_member(expr).map(PApi::Member),
         }
     }
 
-    fn is_p_call<'a>(&'a self, expr: &'a Expr, name: &str) -> Option<&'a CallExpr> {
-        let call = as_call(self.resolve_pattern_expr(expr))?;
+    fn p_call_api<'a>(&'a self, call: &'a CallExpr) -> Option<PApi<'a>> {
         let Callee::Expr(callee) = &call.callee else {
             return None;
         };
-
-        if self.is_p_member(callee, name) {
-            Some(call)
-        } else {
-            None
+        if let Some(name) = self.p_member(callee) {
+            return Some(PApi::Call(name, call));
         }
-    }
-
-    fn is_p_chain_call<'a>(
-        &'a self,
-        expr: &'a Expr,
-        base: &str,
-        method: &str,
-    ) -> Option<&'a CallExpr> {
-        let call = as_call(self.resolve_pattern_expr(expr))?;
-        let Callee::Expr(callee) = &call.callee else {
-            return None;
-        };
         let Expr::Member(member) = &**callee else {
             return None;
         };
-        if member_name(member) != Some(method) {
-            return None;
-        }
-        self.is_p_member(&member.obj, base).then_some(call)
+        Some(PApi::Chain(
+            self.p_member(&member.obj)?,
+            member_name(member)?,
+            call,
+        ))
     }
 
     fn select_call<'a>(&'a self, expr: &'a Expr) -> Option<(&'a CallExpr, Option<&'a Expr>)> {
@@ -406,13 +405,9 @@ impl TsPatternTransformer {
         if member_name(member) != Some("select") {
             return None;
         }
-
-        if matches!(&*member.obj, Expr::Ident(_) | Expr::Member(_))
-            && self.is_p_member(callee, "select")
-        {
+        if self.p_member(callee).is_some() {
             return Some((call, None));
         }
-
         Some((call, Some(&member.obj)))
     }
 
@@ -1108,694 +1103,33 @@ impl TsPatternTransformer {
         let pattern = self.resolve_pattern_expr(pattern);
 
         if let Some((call, base)) = self.select_call(pattern) {
-            return match (base, call.args.as_slice()) {
-                (None, []) => {
-                    selections.push(SelectionBinding {
-                        name: None,
-                        value,
-                        ..Default::default()
-                    });
-                    Some(bool_lit(true))
-                }
-                (Some(base), []) => {
-                    selections.push(SelectionBinding {
-                        name: None,
-                        value: value.clone(),
-                        ..Default::default()
-                    });
-                    self.pattern_test_with_selections(value, base, selections)
-                }
-                (None, [arg]) => {
-                    if let Some(name) = selection_name(&arg.expr) {
-                        if name == "__proto__" {
-                            return None;
-                        }
-                        selections.push(SelectionBinding {
-                            name: Some(name),
-                            value,
-                            ..Default::default()
-                        });
-                        Some(bool_lit(true))
-                    } else {
-                        selections.push(SelectionBinding {
-                            name: None,
-                            value: value.clone(),
-                            ..Default::default()
-                        });
-                        self.pattern_test_with_selections(value, &arg.expr, selections)
-                    }
-                }
-                (Some(base), [arg]) => {
-                    if let Some(name) = selection_name(&arg.expr) {
-                        if name == "__proto__" {
-                            return None;
-                        }
-                        selections.push(SelectionBinding {
-                            name: Some(name),
-                            value: value.clone(),
-                            ..Default::default()
-                        });
-                        self.pattern_test_with_selections(value, base, selections)
-                    } else {
-                        None
-                    }
-                }
-                (None, [name, inner]) => {
-                    let name = selection_name(&name.expr)?;
-                    if name == "__proto__" {
-                        return None;
-                    }
-                    selections.push(SelectionBinding {
-                        name: Some(name),
-                        value: value.clone(),
-                        ..Default::default()
-                    });
-                    self.pattern_test_with_selections(value, &inner.expr, selections)
-                }
-                _ => None,
+            let (name, inner) = match (base, call.args.as_slice()) {
+                (None, []) => (None, None),
+                (Some(base), []) => (None, Some(base)),
+                (None, [arg]) => match selection_name(&arg.expr) {
+                    Some(name) => (Some(name), None),
+                    None => (None, Some(&*arg.expr)),
+                },
+                (Some(base), [name]) => (Some(selection_name(&name.expr)?), Some(base)),
+                (None, [name, inner]) => (Some(selection_name(&name.expr)?), Some(&*inner.expr)),
+                _ => return None,
+            };
+            if name.as_deref() == Some("__proto__") {
+                return None;
+            }
+            selections.push(SelectionBinding {
+                name,
+                value: value.clone(),
+                ..Default::default()
+            });
+            return match inner {
+                Some(inner) => self.pattern_test_with_selections(value, inner, selections),
+                None => Some(bool_lit(true)),
             };
         }
 
-        if self.is_p_member(pattern, "_") {
-            return Some(bool_lit(true));
-        }
-
-        for (name, type_name) in [
-            ("string", "string"),
-            ("number", "number"),
-            ("boolean", "boolean"),
-            ("bigint", "bigint"),
-            ("symbol", "symbol"),
-        ] {
-            if self.is_p_member(pattern, name) {
-                return Some(typeof_eq(value, type_name));
-            }
-        }
-
-        if self.is_p_member(pattern, "nullish") {
-            return Some(or(
-                strict_eq(value.clone(), null_lit()),
-                strict_eq(value, undefined_expr(self.unresolved_ctxt)),
-            ));
-        }
-
-        if self.is_p_member(pattern, "nonNullable") {
-            return Some(and(
-                strict_ne(value.clone(), null_lit()),
-                strict_ne(value, undefined_expr(self.unresolved_ctxt)),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "optional") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            let mut inner_selections = Vec::new();
-            let test = self.pattern_test_with_selections(
-                value.clone(),
-                &call.args[0].expr,
-                &mut inner_selections,
-            )?;
-            selections.extend(
-                inner_selections
-                    .into_iter()
-                    .map(|selection| SelectionBinding {
-                        name: selection.name,
-                        value: cond_expr(
-                            strict_eq(value.clone(), undefined_expr(self.unresolved_ctxt)),
-                            undefined_expr(self.unresolved_ctxt),
-                            selection.value,
-                        ),
-                        capture_group: selection.capture_group,
-                        projection: selection.projection,
-                    }),
-            );
-            return Some(or(
-                strict_eq(value, undefined_expr(self.unresolved_ctxt)),
-                test,
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "not") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            let mut inner_selections = Vec::new();
-            let test = self.pattern_test_with_selections(
-                value,
-                &call.args[0].expr,
-                &mut inner_selections,
-            )?;
-            if !inner_selections.is_empty() {
-                return None;
-            }
-            return Some(unary(UnaryOp::Bang, test));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "union") {
-            if call.args.is_empty() {
-                return None;
-            }
-
-            return call
-                .args
-                .iter()
-                .map(|arg| {
-                    let mut inner_selections = Vec::new();
-                    let test = self.pattern_test_with_selections(
-                        value.clone(),
-                        &arg.expr,
-                        &mut inner_selections,
-                    )?;
-                    if !inner_selections.is_empty() {
-                        return None;
-                    }
-                    Some(test)
-                })
-                .try_fold(None, |acc, test| {
-                    let test = test?;
-                    Some(Some(match acc {
-                        Some(acc) => or(acc, test),
-                        None => test,
-                    }))
-                })?;
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "array") {
-            if call.args.len() > 1 {
-                return None;
-            }
-
-            let array_test = array_is_array(value.clone(), self.unresolved_ctxt);
-            if call.args.is_empty() {
-                return Some(array_test);
-            }
-
-            let item_ident = private_ident!("_tsPatternItem");
-            let mut item_selections = Vec::new();
-            let item_test = self.pattern_test_with_selections(
-                ident_expr(&item_ident),
-                &call.args[0].expr,
-                &mut item_selections,
-            )?;
-            if !item_selections.is_empty() {
-                return None;
-            }
-            return Some(and(
-                array_test,
-                call_member(
-                    member_expr(value, "every"),
-                    vec![Expr::Arrow(ArrowExpr {
-                        span: DUMMY_SP,
-                        ctxt: Default::default(),
-                        params: vec![Pat::Ident(item_ident.into())],
-                        body: Box::new(BlockStmtOrExpr::Expr(Box::new(item_test))),
-                        is_async: false,
-                        is_generator: false,
-                        type_params: None,
-                        return_type: None,
-                    })],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "set") {
-            if call.args.len() > 1 {
-                return None;
-            }
-
-            let set_test = instance_of(value.clone(), "Set", self.unresolved_ctxt);
-            if call.args.is_empty() {
-                return Some(set_test);
-            }
-
-            let item_ident = private_ident!("_tsPatternItem");
-            let mut item_selections = Vec::new();
-            let item_test = self.pattern_test_with_selections(
-                ident_expr(&item_ident),
-                &call.args[0].expr,
-                &mut item_selections,
-            )?;
-            if !item_selections.is_empty() {
-                return None;
-            }
-            return Some(and(
-                set_test,
-                iterable_every(value, Pat::Ident(item_ident.into()), item_test),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "map") {
-            if call.args.len() > 2 {
-                return None;
-            }
-
-            let map_test = instance_of(value.clone(), "Map", self.unresolved_ctxt);
-            if call.args.is_empty() {
-                return Some(map_test);
-            }
-            if call.args.len() != 2 {
-                return None;
-            }
-
-            let key_ident = private_ident!("_tsPatternKey");
-            let value_ident = private_ident!("_tsPatternValue");
-            let mut key_selections = Vec::new();
-            let key_test = self.pattern_test_with_selections(
-                ident_expr(&key_ident),
-                &call.args[0].expr,
-                &mut key_selections,
-            )?;
-            if !key_selections.is_empty() {
-                return None;
-            }
-            let mut value_selections = Vec::new();
-            let value_test = self.pattern_test_with_selections(
-                ident_expr(&value_ident),
-                &call.args[1].expr,
-                &mut value_selections,
-            )?;
-            if !value_selections.is_empty() {
-                return None;
-            }
-            return Some(and(
-                map_test,
-                iterable_every(
-                    call_member(member_expr(value, "entries"), vec![]),
-                    Pat::Array(ArrayPat {
-                        span: DUMMY_SP,
-                        elems: vec![
-                            Some(Pat::Ident(key_ident.into())),
-                            Some(Pat::Ident(value_ident.into())),
-                        ],
-                        optional: false,
-                        type_ann: None,
-                    }),
-                    ordered_and(key_test, value_test),
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "record") {
-            if call.args.is_empty() || call.args.len() > 2 {
-                return None;
-            }
-
-            let key_ident = private_ident!("_tsPatternKey");
-            let value_ident = private_ident!("_tsPatternValue");
-            let key_pattern = (call.args.len() == 2).then_some(&call.args[0].expr);
-            let value_pattern = &call.args[call.args.len() - 1].expr;
-            let mut key_selections = Vec::new();
-            let mut coerced_key_test = None;
-            let mut coerced_key_ident = None;
-            let key_test = if let Some(key_pattern) = key_pattern {
-                let direct_key_test = self.pattern_test_with_selections(
-                    ident_expr(&key_ident),
-                    key_pattern,
-                    &mut key_selections,
-                )?;
-                if key_selections.is_empty() {
-                    let coerced_key = call_expr(
-                        global_ident("Number", self.unresolved_ctxt),
-                        vec![ident_expr(&key_ident)],
-                    );
-                    ordered_or(
-                        and(
-                            typeof_eq(ident_expr(&key_ident), "string"),
-                            and(
-                                unary(
-                                    UnaryOp::Bang,
-                                    call_member(
-                                        member_expr(
-                                            global_ident("Number", self.unresolved_ctxt),
-                                            "isNaN",
-                                        ),
-                                        vec![coerced_key.clone()],
-                                    ),
-                                ),
-                                self.pattern_test(coerced_key, key_pattern)?,
-                            ),
-                        ),
-                        direct_key_test,
-                    )
-                } else {
-                    let coerced_ident = private_ident!("_tsPatternCoercedKey");
-                    let mut _coerced_selections = Vec::new();
-                    let test = self.pattern_test_with_selections(
-                        ident_expr(&coerced_ident),
-                        key_pattern,
-                        &mut _coerced_selections,
-                    )?;
-                    coerced_key_test = Some(and(
-                        typeof_eq(ident_expr(&key_ident), "string"),
-                        and(
-                            unary(
-                                UnaryOp::Bang,
-                                call_member(
-                                    member_expr(
-                                        global_ident("Number", self.unresolved_ctxt),
-                                        "isNaN",
-                                    ),
-                                    vec![ident_expr(&coerced_ident)],
-                                ),
-                            ),
-                            test,
-                        ),
-                    ));
-                    coerced_key_ident = Some(coerced_ident);
-                    direct_key_test
-                }
-            } else {
-                typeof_eq(ident_expr(&key_ident), "string")
-            };
-            let mut value_selections = Vec::new();
-            let value_test = self.pattern_test_with_selections(
-                ident_expr(&value_ident),
-                value_pattern,
-                &mut value_selections,
-            )?;
-            if key_selections
-                .iter()
-                .chain(value_selections.iter())
-                .any(|selection| {
-                    selection
-                        .name
-                        .as_deref()
-                        .is_some_and(unsupported_record_selection_name)
-                })
-            {
-                return None;
-            }
-            if !key_selections.is_empty() || !value_selections.is_empty() {
-                let all_selections = key_selections
-                    .iter()
-                    .chain(value_selections.iter())
-                    .collect::<Vec<_>>();
-                let anonymous_count = all_selections
-                    .iter()
-                    .filter(|selection| selection.name.is_none())
-                    .count();
-                if anonymous_count > 1 || (anonymous_count == 1 && all_selections.len() > 1) {
-                    return None;
-                }
-
-                let group = private_ident!("_tsPatternRecordSelection");
-                let result = record_selection_match(
-                    value,
-                    self.unresolved_ctxt,
-                    key_ident.clone(),
-                    value_ident.clone(),
-                    key_test,
-                    coerced_key_test,
-                    coerced_key_ident,
-                    value_test,
-                    &key_selections,
-                    &value_selections,
-                );
-                let mut record_selections = Vec::with_capacity(all_selections.len());
-                for selection in all_selections {
-                    let mut projection = vec!["selection".to_string()];
-                    if let Some(name) = &selection.name {
-                        projection.push(name.clone());
-                    }
-                    record_selections.push(SelectionBinding {
-                        name: selection.name.clone(),
-                        value: result.clone(),
-                        capture_group: Some(group.to_id()),
-                        projection: Some(projection),
-                    });
-                }
-                selections.extend(record_selections);
-                return Some(member_expr(result, "matched"));
-            }
-            let key_match_ident = private_ident!("_tsPatternRecordKeyMatch");
-            let value_match_ident = private_ident!("_tsPatternRecordValueMatch");
-            return Some(and(
-                and(
-                    and(
-                        strict_ne(value.clone(), null_lit()),
-                        typeof_eq(value.clone(), "object"),
-                    ),
-                    unary(
-                        UnaryOp::Bang,
-                        array_is_array(value.clone(), self.unresolved_ctxt),
-                    ),
-                ),
-                call_member(
-                    member_expr(record_entries(value.clone(), self.unresolved_ctxt), "every"),
-                    vec![Expr::Arrow(ArrowExpr {
-                        span: DUMMY_SP,
-                        ctxt: Default::default(),
-                        params: vec![Pat::Ident(key_ident.clone().into())],
-                        body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                            span: DUMMY_SP,
-                            ctxt: Default::default(),
-                            stmts: vec![
-                                const_stmt(
-                                    value_ident.clone(),
-                                    computed_member_expr(value.clone(), ident_expr(&key_ident)),
-                                ),
-                                const_stmt(key_match_ident.clone(), key_test),
-                                const_stmt(value_match_ident.clone(), value_test),
-                                return_stmt(ordered_and(
-                                    ident_expr(&key_match_ident),
-                                    ident_expr(&value_match_ident),
-                                )),
-                            ],
-                        })),
-                        is_async: false,
-                        is_generator: false,
-                        type_params: None,
-                        return_type: None,
-                    })],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "intersection") {
-            if call.args.is_empty() {
-                return None;
-            }
-
-            return call
-                .args
-                .iter()
-                .map(|arg| {
-                    let mut inner_selections = Vec::new();
-                    let test = self.pattern_test_with_selections(
-                        value.clone(),
-                        &arg.expr,
-                        &mut inner_selections,
-                    )?;
-                    if !inner_selections.is_empty() {
-                        return None;
-                    }
-                    Some(test)
-                })
-                .try_fold(None, |acc, test| {
-                    let test = test?;
-                    Some(Some(match acc {
-                        Some(acc) => and(acc, test),
-                        None => test,
-                    }))
-                })?;
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "startsWith") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                call_member(
-                    member_expr(value, "startsWith"),
-                    vec![(*call.args[0].expr).clone()],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "endsWith") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                call_member(
-                    member_expr(value, "endsWith"),
-                    vec![(*call.args[0].expr).clone()],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "includes") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                call_member(
-                    member_expr(value, "includes"),
-                    vec![(*call.args[0].expr).clone()],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "regex") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                call_member(
-                    member_expr(value, "match"),
-                    vec![(*call.args[0].expr).clone()],
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "minLength") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                bin(
-                    BinaryOp::GtEq,
-                    member_expr(value, "length"),
-                    (*call.args[0].expr).clone(),
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "length") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                strict_eq(member_expr(value, "length"), (*call.args[0].expr).clone()),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "string", "maxLength") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "string"),
-                bin(
-                    BinaryOp::LtEq,
-                    member_expr(value, "length"),
-                    (*call.args[0].expr).clone(),
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_chain_call(pattern, "number", "between") {
-            if call.args.len() != 2 {
-                return None;
-            }
-            return Some(and(
-                typeof_eq(value.clone(), "number"),
-                and(
-                    bin(BinaryOp::GtEq, value.clone(), (*call.args[0].expr).clone()),
-                    bin(BinaryOp::LtEq, value, (*call.args[1].expr).clone()),
-                ),
-            ));
-        }
-
-        for method in ["lt", "gt", "lte", "gte"] {
-            if let Some(call) = self.is_p_chain_call(pattern, "number", method) {
-                if call.args.len() != 1 {
-                    return None;
-                }
-                let op = match method {
-                    "lt" => BinaryOp::Lt,
-                    "gt" => BinaryOp::Gt,
-                    "lte" => BinaryOp::LtEq,
-                    "gte" => BinaryOp::GtEq,
-                    _ => unreachable!(),
-                };
-                return Some(and(
-                    typeof_eq(value.clone(), "number"),
-                    bin(op, value, (*call.args[0].expr).clone()),
-                ));
-            }
-        }
-
-        if self.is_p_chain_call(pattern, "number", "int").is_some() {
-            return Some(and(
-                typeof_eq(value.clone(), "number"),
-                call_member(
-                    member_expr(global_ident("Number", self.unresolved_ctxt), "isInteger"),
-                    vec![value],
-                ),
-            ));
-        }
-
-        if self.is_p_chain_call(pattern, "number", "finite").is_some() {
-            return Some(and(
-                typeof_eq(value.clone(), "number"),
-                call_member(
-                    member_expr(global_ident("Number", self.unresolved_ctxt), "isFinite"),
-                    vec![value],
-                ),
-            ));
-        }
-
-        if self
-            .is_p_chain_call(pattern, "number", "positive")
-            .is_some()
-        {
-            return Some(and(
-                typeof_eq(value.clone(), "number"),
-                bin(
-                    BinaryOp::Gt,
-                    value,
-                    Expr::Lit(Lit::Num(Number {
-                        span: DUMMY_SP,
-                        value: 0.0,
-                        raw: None,
-                    })),
-                ),
-            ));
-        }
-
-        if self
-            .is_p_chain_call(pattern, "number", "negative")
-            .is_some()
-        {
-            return Some(and(
-                typeof_eq(value.clone(), "number"),
-                bin(
-                    BinaryOp::Lt,
-                    value,
-                    Expr::Lit(Lit::Num(Number {
-                        span: DUMMY_SP,
-                        value: 0.0,
-                        raw: None,
-                    })),
-                ),
-            ));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "instanceOf") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(Expr::Bin(BinExpr {
-                span: DUMMY_SP,
-                op: BinaryOp::InstanceOf,
-                left: Box::new(value),
-                right: call.args[0].expr.clone(),
-            }));
-        }
-
-        if let Some(call) = self.is_p_call(pattern, "when") {
-            if call.args.len() != 1 {
-                return None;
-            }
-            return Some(predicate_result(&call.args[0].expr, value));
+        if let Some(api) = self.p_api(pattern) {
+            return self.p_api_test(value, api, selections);
         }
 
         if is_zero_literal(pattern) {
@@ -1829,6 +1163,294 @@ impl TsPatternTransformer {
             Expr::Array(array) => self.array_test(value, array, selections),
             _ => None,
         }
+    }
+
+    fn p_api_test(
+        &self,
+        value: Expr,
+        api: PApi,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        let ctxt = self.unresolved_ctxt;
+        match api {
+            PApi::Member("_") => Some(bool_lit(true)),
+            PApi::Member(name @ ("string" | "number" | "boolean" | "bigint" | "symbol")) => {
+                Some(typeof_eq(value, name))
+            }
+            PApi::Member("nullish") => Some(or(
+                strict_eq(value.clone(), null_lit()),
+                strict_eq(value, undefined_expr(ctxt)),
+            )),
+            PApi::Member("nonNullable") => Some(and(
+                strict_ne(value.clone(), null_lit()),
+                strict_ne(value, undefined_expr(ctxt)),
+            )),
+            PApi::Call("optional", call) => {
+                self.optional_test(value, single_arg(call)?, selections)
+            }
+            PApi::Call("not", call) => Some(unary(
+                UnaryOp::Bang,
+                self.unselected_test(value, single_arg(call)?)?,
+            )),
+            PApi::Call("union", call) => join_tests(
+                call.args
+                    .iter()
+                    .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
+                or,
+            ),
+            PApi::Call("intersection", call) => join_tests(
+                call.args
+                    .iter()
+                    .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
+                and,
+            ),
+            PApi::Call("array", call) => self.array_of_test(value, call),
+            PApi::Call("set", call) => self.set_test(value, call),
+            PApi::Call("map", call) => self.map_test(value, call),
+            PApi::Call("record", call) => self.record_test(value, call, selections),
+            PApi::Call("instanceOf", call) => {
+                Some(bin(BinaryOp::InstanceOf, value, single_arg(call)?.clone()))
+            }
+            PApi::Call("when", call) => Some(predicate_result(single_arg(call)?, value)),
+            PApi::Chain("string", method, call) => string_chain_test(value, method, call),
+            PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
+            _ => None,
+        }
+    }
+
+    /// Tests a nested pattern that must not contain selections.
+    fn unselected_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
+        let mut selections = Vec::new();
+        let test = self.pattern_test_with_selections(value, pattern, &mut selections)?;
+        selections.is_empty().then_some(test)
+    }
+
+    fn optional_test(
+        &self,
+        value: Expr,
+        pattern: &Expr,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        let undefined = undefined_expr(self.unresolved_ctxt);
+        let mut inner_selections = Vec::new();
+        let test =
+            self.pattern_test_with_selections(value.clone(), pattern, &mut inner_selections)?;
+        selections.extend(
+            inner_selections
+                .into_iter()
+                .map(|selection| SelectionBinding {
+                    value: cond_expr(
+                        strict_eq(value.clone(), undefined.clone()),
+                        undefined.clone(),
+                        selection.value,
+                    ),
+                    ..selection
+                }),
+        );
+        Some(or(strict_eq(value, undefined), test))
+    }
+
+    fn array_of_test(&self, value: Expr, call: &CallExpr) -> Option<Expr> {
+        let array_test = array_is_array(value.clone(), self.unresolved_ctxt);
+        match call.args.as_slice() {
+            [] => Some(array_test),
+            [item] => {
+                let item_ident = private_ident!("_tsPatternItem");
+                let item_test = self.unselected_test(ident_expr(&item_ident), &item.expr)?;
+                Some(and(
+                    array_test,
+                    call_expr(
+                        member_expr(value, "every"),
+                        vec![arrow_expr(
+                            vec![Pat::Ident(item_ident.into())],
+                            BlockStmtOrExpr::Expr(Box::new(item_test)),
+                        )],
+                    ),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn set_test(&self, value: Expr, call: &CallExpr) -> Option<Expr> {
+        let set_test = instance_of(value.clone(), "Set", self.unresolved_ctxt);
+        match call.args.as_slice() {
+            [] => Some(set_test),
+            [item] => {
+                let item_ident = private_ident!("_tsPatternItem");
+                let item_test = self.unselected_test(ident_expr(&item_ident), &item.expr)?;
+                Some(and(
+                    set_test,
+                    iterable_every(value, Pat::Ident(item_ident.into()), item_test),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn map_test(&self, value: Expr, call: &CallExpr) -> Option<Expr> {
+        let map_test = instance_of(value.clone(), "Map", self.unresolved_ctxt);
+        let [key, entry] = call.args.as_slice() else {
+            return call.args.is_empty().then_some(map_test);
+        };
+        let key_ident = private_ident!("_tsPatternKey");
+        let value_ident = private_ident!("_tsPatternValue");
+        let key_test = self.unselected_test(ident_expr(&key_ident), &key.expr)?;
+        let value_test = self.unselected_test(ident_expr(&value_ident), &entry.expr)?;
+        Some(and(
+            map_test,
+            iterable_every(
+                call_expr(member_expr(value, "entries"), vec![]),
+                Pat::Array(ArrayPat {
+                    span: DUMMY_SP,
+                    elems: vec![
+                        Some(Pat::Ident(key_ident.into())),
+                        Some(Pat::Ident(value_ident.into())),
+                    ],
+                    optional: false,
+                    type_ann: None,
+                }),
+                ordered_and(key_test, value_test),
+            ),
+        ))
+    }
+
+    fn record_test(
+        &self,
+        value: Expr,
+        call: &CallExpr,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        let ctxt = self.unresolved_ctxt;
+        let (key_pattern, value_pattern) = match call.args.as_slice() {
+            [value] => (None, &*value.expr),
+            [key, value] => (Some(&*key.expr), &*value.expr),
+            _ => return None,
+        };
+        let key_ident = private_ident!("_tsPatternKey");
+        let value_ident = private_ident!("_tsPatternValue");
+        // Records also match numeric keys through their string form, as
+        // ts-pattern does.
+        let numeric_key_test = |key: Expr, test: Expr| {
+            and(
+                typeof_eq(ident_expr(&key_ident), "string"),
+                and(
+                    unary(
+                        UnaryOp::Bang,
+                        call_expr(
+                            member_expr(global_ident("Number", ctxt), "isNaN"),
+                            vec![key],
+                        ),
+                    ),
+                    test,
+                ),
+            )
+        };
+        let mut key_selections = Vec::new();
+        let mut coerced_key = None;
+        let key_test = match key_pattern {
+            None => typeof_eq(ident_expr(&key_ident), "string"),
+            Some(key_pattern) => {
+                let direct_key_test = self.pattern_test_with_selections(
+                    ident_expr(&key_ident),
+                    key_pattern,
+                    &mut key_selections,
+                )?;
+                if key_selections.is_empty() {
+                    let coerced =
+                        call_expr(global_ident("Number", ctxt), vec![ident_expr(&key_ident)]);
+                    ordered_or(
+                        numeric_key_test(coerced.clone(), self.pattern_test(coerced, key_pattern)?),
+                        direct_key_test,
+                    )
+                } else {
+                    let coerced_ident = private_ident!("_tsPatternCoercedKey");
+                    let test = numeric_key_test(
+                        ident_expr(&coerced_ident),
+                        self.pattern_test(ident_expr(&coerced_ident), key_pattern)?,
+                    );
+                    coerced_key = Some((coerced_ident, test));
+                    direct_key_test
+                }
+            }
+        };
+        let mut value_selections = Vec::new();
+        let value_test = self.pattern_test_with_selections(
+            ident_expr(&value_ident),
+            value_pattern,
+            &mut value_selections,
+        )?;
+        let all_selections = key_selections
+            .iter()
+            .chain(value_selections.iter())
+            .collect::<Vec<_>>();
+        if all_selections.iter().any(|selection| {
+            selection
+                .name
+                .as_deref()
+                .is_some_and(unsupported_record_selection_name)
+        }) {
+            return None;
+        }
+
+        if all_selections.is_empty() {
+            let key_match_ident = private_ident!("_tsPatternRecordKeyMatch");
+            let value_match_ident = private_ident!("_tsPatternRecordValueMatch");
+            return Some(and(
+                and(
+                    and(
+                        strict_ne(value.clone(), null_lit()),
+                        typeof_eq(value.clone(), "object"),
+                    ),
+                    unary(UnaryOp::Bang, array_is_array(value.clone(), ctxt)),
+                ),
+                call_expr(
+                    member_expr(reflect_own_keys(value.clone(), ctxt), "every"),
+                    vec![arrow_expr(
+                        vec![Pat::Ident(key_ident.clone().into())],
+                        BlockStmtOrExpr::BlockStmt(block_stmt(vec![
+                            const_stmt(
+                                value_ident,
+                                computed_member_expr(value, ident_expr(&key_ident)),
+                            ),
+                            const_stmt(key_match_ident.clone(), key_test),
+                            const_stmt(value_match_ident.clone(), value_test),
+                            return_stmt(ordered_and(
+                                ident_expr(&key_match_ident),
+                                ident_expr(&value_match_ident),
+                            )),
+                        ])),
+                    )],
+                ),
+            ));
+        }
+
+        if mixes_anonymous_selection(all_selections.iter().copied()) {
+            return None;
+        }
+        let group = private_ident!("_tsPatternRecordSelection");
+        let result = record_selection_match(RecordSelectionMatch {
+            value,
+            ctxt,
+            key_ident,
+            value_ident,
+            key_test,
+            coerced_key,
+            value_test,
+            key_selections: &key_selections,
+            value_selections: &value_selections,
+        });
+        selections.extend(all_selections.into_iter().map(|selection| {
+            let mut projection = vec!["selection".to_string()];
+            projection.extend(selection.name.clone());
+            SelectionBinding {
+                name: selection.name.clone(),
+                value: result.clone(),
+                capture_group: Some(group.to_id()),
+                projection: Some(projection),
+            }
+        }));
+        Some(member_expr(result, "matched"))
     }
 
     fn object_test(
@@ -1885,7 +1507,7 @@ impl TsPatternTransformer {
     }
 
     fn is_optional_pattern(&self, pattern: &Expr) -> bool {
-        self.is_p_call(pattern, "optional").is_some()
+        matches!(self.p_api(pattern), Some(PApi::Call("optional", _)))
     }
 
     fn array_test(
@@ -2091,95 +1713,78 @@ impl VisitMut for EffectDetector<'_> {
     }
 }
 
+/// How a call inside a pattern consumes its arguments.
+#[derive(Clone, Copy)]
+enum PatternCall {
+    /// `P.when(predicate)`
+    When,
+    /// `P.select(...)` or `pattern.select(...)`
+    Select,
+    /// Arguments are nested patterns.
+    Nested,
+    /// Arguments are plain values, e.g. `P.string.startsWith(prefix)`.
+    Values,
+    /// Unknown calls stay unprepared and fail lowering.
+    Opaque,
+}
+
+impl TsPatternTransformer {
+    fn pattern_call(&self, call: &CallExpr) -> PatternCall {
+        let Callee::Expr(callee) = &call.callee else {
+            return PatternCall::Opaque;
+        };
+        if matches!(&**callee, Expr::Member(member) if member_name(member) == Some("select")) {
+            return PatternCall::Select;
+        }
+        match self.p_call_api(call) {
+            Some(PApi::Call("when", _)) => PatternCall::When,
+            Some(PApi::Call(
+                "union" | "intersection" | "optional" | "not" | "array" | "set" | "map" | "record",
+                _,
+            )) => PatternCall::Nested,
+            Some(PApi::Call("instanceOf", _) | PApi::Chain(..)) => PatternCall::Values,
+            _ => PatternCall::Opaque,
+        }
+    }
+}
+
 fn pattern_needs_preparation(transformer: &TsPatternTransformer, expr: &Expr) -> bool {
-    let expr = transformer.resolve_pattern_expr(expr);
-    match expr {
+    let needs = |expr: &Expr| pattern_needs_preparation(transformer, expr);
+    match transformer.resolve_pattern_expr(expr) {
         Expr::Object(object) => object.props.iter().any(|prop| match prop {
             PropOrSpread::Prop(prop) => match &**prop {
                 Prop::KeyValue(key_value) => {
-                    matches!(key_value.key, PropName::Computed(_))
-                        || pattern_needs_preparation(transformer, &key_value.value)
+                    matches!(key_value.key, PropName::Computed(_)) || needs(&key_value.value)
                 }
                 _ => true,
             },
             PropOrSpread::Spread(_) => true,
         }),
-        Expr::Array(array) => array.elems.iter().flatten().any(|elem| {
-            elem.spread.is_some() || pattern_needs_preparation(transformer, &elem.expr)
-        }),
-        Expr::Paren(paren) => pattern_needs_preparation(transformer, &paren.expr),
-        Expr::Call(call) => {
-            let callee = match &call.callee {
-                Callee::Expr(callee) => &**callee,
-                Callee::Super(_) => return true,
-                Callee::Import(_) => return true,
-            };
-
-            if is_p_pattern_constructor(callee, "when") {
-                call.args.first().is_none_or(|arg| {
-                    !is_function_expr(&arg.expr) || guard_requires_snapshot(&arg.expr)
-                })
-            } else if is_p_pattern_constructor(callee, "select") {
-                match call.args.as_slice() {
-                    [] => false,
-                    [arg] if selection_name(&arg.expr).is_some() => false,
-                    [arg] => pattern_needs_preparation(transformer, &arg.expr),
-                    [_, pattern] => pattern_needs_preparation(transformer, &pattern.expr),
-                    _ => true,
-                }
-            } else if is_p_pattern_constructor(callee, "union")
-                || is_p_pattern_constructor(callee, "intersection")
-                || is_p_pattern_constructor(callee, "optional")
-                || is_p_pattern_constructor(callee, "not")
-                || is_p_pattern_constructor(callee, "array")
-                || is_p_pattern_constructor(callee, "set")
-                || is_p_pattern_constructor(callee, "map")
-                || is_p_pattern_constructor(callee, "record")
-            {
-                call.args
-                    .iter()
-                    .any(|arg| pattern_needs_preparation(transformer, &arg.expr))
-            } else if is_p_value_chain_call(callee)
-                || is_p_pattern_constructor(callee, "instanceOf")
-            {
-                call.args
-                    .iter()
-                    .any(|arg| value_needs_preparation(&arg.expr))
-            } else {
-                // Unknown calls are deliberately conservative and will be
-                // left unchanged if compilation cannot lower them.
-                true
-            }
-        }
+        Expr::Array(array) => array
+            .elems
+            .iter()
+            .flatten()
+            .any(|elem| elem.spread.is_some() || needs(&elem.expr)),
+        Expr::Paren(paren) => needs(&paren.expr),
+        Expr::Call(call) => match transformer.pattern_call(call) {
+            PatternCall::When => call.args.first().is_none_or(|arg| {
+                !is_function_expr(&arg.expr) || guard_requires_snapshot(&arg.expr)
+            }),
+            PatternCall::Select => match call.args.as_slice() {
+                [] => false,
+                [arg] if selection_name(&arg.expr).is_some() => false,
+                [pattern] | [_, pattern] => needs(&pattern.expr),
+                _ => true,
+            },
+            PatternCall::Nested => call.args.iter().any(|arg| needs(&arg.expr)),
+            PatternCall::Values => call
+                .args
+                .iter()
+                .any(|arg| value_needs_preparation(&arg.expr)),
+            PatternCall::Opaque => true,
+        },
         _ => false,
     }
-}
-
-fn is_p_value_chain_call(expr: &Expr) -> bool {
-    let Expr::Member(member) = expr else {
-        return false;
-    };
-    matches!(
-        member_name(member),
-        Some(
-            "startsWith"
-                | "endsWith"
-                | "includes"
-                | "regex"
-                | "minLength"
-                | "length"
-                | "maxLength"
-                | "between"
-                | "lt"
-                | "gt"
-                | "lte"
-                | "gte"
-                | "int"
-                | "finite"
-                | "positive"
-                | "negative"
-        )
-    )
 }
 
 fn value_needs_preparation(expr: &Expr) -> bool {
@@ -2191,24 +1796,18 @@ fn value_needs_preparation(expr: &Expr) -> bool {
     }
 }
 
-fn is_p_pattern_constructor(expr: &Expr, name: &str) -> bool {
-    let Expr::Member(member) = expr else {
-        return false;
-    };
-    member_name(member) == Some(name)
-}
-
 fn handler_needs_preparation(handler: &Expr) -> bool {
     !is_function_expr(handler)
 }
 
+/// Moves the values a pattern evaluates into arguments of the prepared
+/// expression so they are evaluated once, in source order.
 fn prepare_pattern_expr(
     transformer: &TsPatternTransformer,
     expr: &mut Expr,
     params: &mut Vec<Ident>,
     args: &mut Vec<Expr>,
 ) {
-    let original_expr = expr.clone();
     match expr {
         Expr::Object(object) => {
             for prop in &mut object.props {
@@ -2221,8 +1820,7 @@ fn prepare_pattern_expr(
                 if let PropName::Computed(computed) = &mut key_value.key {
                     let ident = private_ident!("_tsPatternKey");
                     params.push(ident.clone());
-                    args.push((*computed.expr).clone());
-                    *computed.expr = ident_expr(&ident);
+                    args.push(std::mem::replace(&mut *computed.expr, ident_expr(&ident)));
                 }
                 prepare_pattern_expr(transformer, &mut key_value.value, params, args);
             }
@@ -2232,89 +1830,32 @@ fn prepare_pattern_expr(
                 prepare_pattern_expr(transformer, &mut elem.expr, params, args);
             }
         }
-        Expr::Paren(paren) => {
-            prepare_pattern_expr(transformer, &mut paren.expr, params, args);
-        }
-        Expr::Call(call) => {
-            let callee = match &call.callee {
-                Callee::Expr(callee) => &**callee,
-                Callee::Super(_) | Callee::Import(_) => return,
-            };
-            let pattern_expr = &original_expr;
-            let is_when = is_p_pattern_constructor(callee, "when");
-            let is_select = is_p_pattern_constructor(callee, "select");
-            let is_nested_pattern = is_p_pattern_constructor(callee, "union")
-                || is_p_pattern_constructor(callee, "intersection")
-                || is_p_pattern_constructor(callee, "optional")
-                || is_p_pattern_constructor(callee, "not")
-                || is_p_pattern_constructor(callee, "array")
-                || is_p_pattern_constructor(callee, "set")
-                || is_p_pattern_constructor(callee, "map")
-                || is_p_pattern_constructor(callee, "record");
-
-            if is_when {
+        Expr::Paren(paren) => prepare_pattern_expr(transformer, &mut paren.expr, params, args),
+        Expr::Call(call) => match transformer.pattern_call(call) {
+            PatternCall::When => {
                 if let Some(arg) = call.args.first_mut() {
-                    if !is_function_expr(&arg.expr) {
-                        capture_prepared_value(&mut arg.expr, params, args);
-                    }
+                    capture_prepared_value(&mut arg.expr, params, args);
                 }
-            } else if is_select {
-                match call.args.as_mut_slice() {
-                    [arg] if selection_name(&arg.expr).is_none() => {
-                        prepare_pattern_expr(transformer, &mut arg.expr, params, args)
-                    }
-                    [_, pattern] => {
-                        prepare_pattern_expr(transformer, &mut pattern.expr, params, args)
-                    }
-                    _ => {}
+            }
+            PatternCall::Select => match call.args.as_mut_slice() {
+                [arg] if selection_name(&arg.expr).is_some() => {}
+                [pattern] | [_, pattern] => {
+                    prepare_pattern_expr(transformer, &mut pattern.expr, params, args)
                 }
-            } else if is_nested_pattern {
+                _ => {}
+            },
+            PatternCall::Nested => {
                 for arg in &mut call.args {
                     prepare_pattern_expr(transformer, &mut arg.expr, params, args);
                 }
-            } else if transformer
-                .is_p_chain_call(pattern_expr, "string", "startsWith")
-                .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "endsWith")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "includes")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "regex")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "minLength")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "length")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "string", "maxLength")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "number", "between")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "number", "lt")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "number", "gt")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "number", "lte")
-                    .is_some()
-                || transformer
-                    .is_p_chain_call(pattern_expr, "number", "gte")
-                    .is_some()
-                || transformer.is_p_call(pattern_expr, "instanceOf").is_some()
-            {
+            }
+            PatternCall::Values => {
                 for arg in &mut call.args {
                     capture_prepared_value(&mut arg.expr, params, args);
                 }
             }
-        }
+            PatternCall::Opaque => {}
+        },
         _ => {}
     }
 }
@@ -2508,6 +2049,79 @@ fn selection_name(expr: &Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn single_arg(call: &CallExpr) -> Option<&Expr> {
+    match call.args.as_slice() {
+        [arg] => Some(&arg.expr),
+        _ => None,
+    }
+}
+
+/// Joins tests with `op`; `None` when there are none or one is unsupported.
+fn join_tests(
+    tests: impl IntoIterator<Item = Option<Expr>>,
+    op: fn(Expr, Expr) -> Expr,
+) -> Option<Expr> {
+    let mut tests = tests.into_iter();
+    let first = tests.next()??;
+    tests.try_fold(first, |acc, test| Some(op(acc, test?)))
+}
+
+/// ts-pattern passes either one anonymous selection or named selections.
+fn mixes_anonymous_selection<'a>(
+    selections: impl IntoIterator<Item = &'a SelectionBinding>,
+) -> bool {
+    let (mut anonymous, mut total) = (0, 0);
+    for selection in selections {
+        anonymous += usize::from(selection.name.is_none());
+        total += 1;
+    }
+    anonymous > 0 && total > 1
+}
+
+fn string_chain_test(value: Expr, method: &str, call: &CallExpr) -> Option<Expr> {
+    let arg = single_arg(call)?.clone();
+    let length = || member_expr(value.clone(), "length");
+    let test = match method {
+        "startsWith" | "endsWith" | "includes" => {
+            call_expr(member_expr(value.clone(), method), vec![arg])
+        }
+        "regex" => call_expr(member_expr(value.clone(), "match"), vec![arg]),
+        "minLength" => bin(BinaryOp::GtEq, length(), arg),
+        "length" => strict_eq(length(), arg),
+        "maxLength" => bin(BinaryOp::LtEq, length(), arg),
+        _ => return None,
+    };
+    Some(and(typeof_eq(value, "string"), test))
+}
+
+fn number_chain_test(
+    value: Expr,
+    method: &str,
+    call: &CallExpr,
+    ctxt: SyntaxContext,
+) -> Option<Expr> {
+    let compare = |op, arg: &ExprOrSpread| bin(op, value.clone(), (*arg.expr).clone());
+    let number_method = |name| {
+        call_expr(
+            member_expr(global_ident("Number", ctxt), name),
+            vec![value.clone()],
+        )
+    };
+    let test = match (method, call.args.as_slice()) {
+        ("between", [min, max]) => and(compare(BinaryOp::GtEq, min), compare(BinaryOp::LtEq, max)),
+        ("lt", [arg]) => compare(BinaryOp::Lt, arg),
+        ("gt", [arg]) => compare(BinaryOp::Gt, arg),
+        ("lte", [arg]) => compare(BinaryOp::LtEq, arg),
+        ("gte", [arg]) => compare(BinaryOp::GtEq, arg),
+        ("int", _) => number_method("isInteger"),
+        ("finite", _) => number_method("isFinite"),
+        ("positive", _) => bin(BinaryOp::Gt, value.clone(), num_lit(0.0)),
+        ("negative", _) => bin(BinaryOp::Lt, value.clone(), num_lit(0.0)),
+        _ => return None,
+    };
+    Some(and(typeof_eq(value, "number"), test))
 }
 
 fn guard_result(guard: &Expr, input_expr: Expr) -> Expr {
@@ -3210,6 +2824,35 @@ fn call_expr(callee: Expr, args: Vec<Expr>) -> Expr {
     })
 }
 
+fn arrow_expr(params: Vec<Pat>, body: BlockStmtOrExpr) -> Expr {
+    Expr::Arrow(ArrowExpr {
+        span: DUMMY_SP,
+        ctxt: Default::default(),
+        params,
+        body: Box::new(body),
+        is_async: false,
+        is_generator: false,
+        type_params: None,
+        return_type: None,
+    })
+}
+
+fn block_stmt(stmts: Vec<Stmt>) -> BlockStmt {
+    BlockStmt {
+        span: DUMMY_SP,
+        ctxt: Default::default(),
+        stmts,
+    }
+}
+
+fn num_lit(value: f64) -> Expr {
+    Expr::Lit(Lit::Num(Number {
+        span: DUMMY_SP,
+        value,
+        raw: None,
+    }))
+}
+
 fn call_member(member: Expr, args: Vec<Expr>) -> Expr {
     call_expr(member, args)
 }
@@ -3474,22 +3117,31 @@ fn reflect_own_keys(value: Expr, ctxt: SyntaxContext) -> Expr {
     )
 }
 
-fn record_entries(value: Expr, ctxt: SyntaxContext) -> Expr {
-    reflect_own_keys(value, ctxt)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn record_selection_match(
+struct RecordSelectionMatch<'a> {
     value: Expr,
     ctxt: SyntaxContext,
     key_ident: Ident,
     value_ident: Ident,
     key_test: Expr,
-    coerced_key_test: Option<Expr>,
-    coerced_key_ident: Option<Ident>,
+    /// The numeric form of a selecting key pattern and its test.
+    coerced_key: Option<(Ident, Expr)>,
     value_test: Expr,
-    key_selections: &[SelectionBinding],
-    value_selections: &[SelectionBinding],
+    key_selections: &'a [SelectionBinding],
+    value_selections: &'a [SelectionBinding],
+}
+
+fn record_selection_match(
+    RecordSelectionMatch {
+        value,
+        ctxt,
+        key_ident,
+        value_ident,
+        key_test,
+        coerced_key,
+        value_test,
+        key_selections,
+        value_selections,
+    }: RecordSelectionMatch,
 ) -> Expr {
     let record_value = private_ident!("_tsPatternRecordValue");
     let keys = private_ident!("_tsPatternRecordKeys");
@@ -3534,12 +3186,12 @@ fn record_selection_match(
             value_selections,
         ),
     );
-    let coerced_key_match = coerced_key_test
+    let coerced_key_match = coerced_key
         .as_ref()
         .map(|_| private_ident!("_tsPatternRecordCoercedKeyMatch"));
     let mut collect_selections = Vec::new();
     if let Some(coerced_key_match) = &coerced_key_match {
-        if let Some(coerced_key_ident) = &coerced_key_ident {
+        if let Some((coerced_key_ident, _)) = &coerced_key {
             collect_selections.push(Stmt::If(IfStmt {
                 span: DUMMY_SP,
                 test: Box::new(ident_expr(coerced_key_match)),
@@ -3585,11 +3237,9 @@ fn record_selection_match(
         value_ident.clone(),
         computed_member_expr(ident_expr(&record_value), ident_expr(&key_ident)),
     )];
-    if let (Some(coerced_key_test), Some(coerced_key_ident), Some(coerced_key_match)) = (
-        coerced_key_test,
-        coerced_key_ident,
-        coerced_key_match.clone(),
-    ) {
+    if let (Some((coerced_key_ident, coerced_key_test)), Some(coerced_key_match)) =
+        (coerced_key, coerced_key_match.clone())
+    {
         entry_stmts.push(const_stmt(
             coerced_key_ident.clone(),
             cond_expr(
