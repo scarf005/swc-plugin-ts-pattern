@@ -840,3 +840,26 @@ for (const key of ["P.string", "P.string.select('key')"]) {
     assert.doesNotMatch(code, /\.with\(/)
   })
 }
+
+test("spread pattern arguments keep their spread meaning", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const options = ["a", "b"];
+    export const run = () =>
+      ["a", "c"].map((value) => match(value).with(P.union(...options), () => "hit").otherwise(() => "miss"));
+  `,
+    ["hit", "miss"],
+  )
+})
+
+test("spread arm arguments keep their spread meaning", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const rest = [() => "number"];
+    export const run = () => match(1).with(P.number, ...rest).otherwise(() => "other");
+  `,
+    "number",
+  )
+})
