@@ -979,3 +979,21 @@ test("records with number-rejecting key patterns skip key coercion", async () =>
   assert.doesNotMatch(code, /\.with\(/)
   assert.doesNotMatch(code, /Number\(/, "number-rejecting key patterns need no coercion")
 })
+
+test("inlined callbacks bind their arguments before the body runs", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let input = 1;
+      let object = { n: 1 };
+      const bump = () => { input = 2; object = { n: 2 }; return 0; };
+      const direct = match(input).with(P.number, (value) => bump() + value).otherwise(() => -1);
+      const destructured = match(object).with({ n: P.number }, ({ n }) => bump() + n).otherwise(() => -1);
+      return [direct, destructured];
+    };
+  `,
+    [1, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
