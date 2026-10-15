@@ -1,0 +1,73 @@
+name: Benchmark
+
+on:
+  push:
+    paths:
+      - .github/workflows/bench.yml
+      - examples/**
+      - justfile
+      - plugin/Cargo.lock
+      - plugin/Cargo.toml
+      - plugin/package-lock.json
+      - plugin/src/**
+      - web/deno.lock
+      - web/src/**
+      - web/ts-pattern_bench.ts
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.7
+          cache: true
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            plugin/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('plugin/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - run: npm ci
+        working-directory: plugin
+
+      - run: npm run build
+        working-directory: plugin
+
+      - run: just bench-file
+
+      - run: |
+          {
+            echo '```text'
+            cat docs/just-bench.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: docs/just-bench.txt

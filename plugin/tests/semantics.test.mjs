@@ -768,3 +768,342 @@ test("failed transforms do not leave speculative error imports", async () => {
   )
   assert.doesNotMatch(code, /NonExhaustiveError/)
 })
+
+for (const declaration of ["arrow", "initializer"]) {
+  test(`${declaration} sibling cases cache equal nested prefixes in separate bindings`, async () => {
+    const match = `match(input)
+      .with({ type: "a", data: { k: "1" } }, () => "a1")
+      .with({ type: "a", data: { k: "2" } }, () => "a2")
+      .with({ type: "b", data: { k: "1" } }, () => "b1")
+      .with({ type: "b", data: { k: "2" } }, () => "b2")`
+    const code = await assertEquivalent(
+      `
+      import { match } from "ts-pattern";
+      const select = ${
+        declaration === "arrow"
+          ? `(input) => ${match}.otherwise(() => "none")`
+          : `(input) => { try { const result = ${match}.exhaustive(); return result; } catch { return "none"; } }`
+      };
+      export const run = () => [
+        select({ type: "a", data: { k: "2" } }),
+        select({ type: "b", data: { k: "1" } }),
+        select({ type: "b", data: {} }),
+      ];
+    `,
+      ["a2", "b1", "none"],
+    )
+    assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+  })
+}
+
+for (const declaration of ["arrow", "initializer"]) {
+  for (const [selector, handler] of [["P.select()", "(value) => value"], ["P.select('value')", "({ value }) => value"]]) {
+    test(`${declaration} ${selector} passes the tested getter value to the handler`, async () => {
+      const match = `match(input)
+        .with({ kind: "a", value: ${selector} }, ${handler})
+        .with({ kind: "b" }, () => 0)`
+      const code = await assertEquivalent(
+        `
+        import { match, P } from "ts-pattern";
+        export const run = () => {
+          let reads = 0;
+          const input = { kind: "a", get value() { return ++reads; } };
+          const select = ${
+          declaration === "arrow"
+            ? `(input) => ${match}.otherwise(() => -1)`
+            : `(input) => { const result = ${match}.exhaustive(); return result; }`
+        };
+          return [select(input), reads];
+        };
+      `,
+        [1, 1],
+      )
+      assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+    })
+  }
+}
+
+for (const key of ["P.string", "P.string.select('key')"]) {
+  test(`record ${key} keys keep each named value selection separate`, async () => {
+    const code = await assertEquivalent(
+      `
+      import { match, P } from "ts-pattern";
+      export const run = () =>
+        match({ x: { a: 1, b: 2 }, y: { a: 3, b: 4 } })
+          .with(P.record(${key}, { a: P.select("a"), b: P.select("b") }), (selected) => selected)
+          .otherwise(() => null);
+    `,
+      key === "P.string"
+        ? { a: [1, 3], b: [2, 4] }
+        : { key: ["x", "y"], a: [1, 3], b: [2, 4] },
+    )
+    assert.doesNotMatch(code, /\.with\(/)
+  })
+}
+
+test("spread pattern arguments keep their spread meaning", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const options = ["a", "b"];
+    export const run = () =>
+      ["a", "c"].map((value) => match(value).with(P.union(...options), () => "hit").otherwise(() => "miss"));
+  `,
+    ["hit", "miss"],
+  )
+})
+
+test("spread arm arguments keep their spread meaning", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const rest = [() => "number"];
+    export const run = () => match(1).with(P.number, ...rest).otherwise(() => "other");
+  `,
+    "number",
+  )
+})
+
+test("isMatching compiles direct and curried checks", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, P } from "ts-pattern";
+    const post = { type: "post", title: P.string, stars: P.optional(P.number) };
+    const isPost = isMatching(post);
+    export const run = () => {
+      const inputs = [{ type: "post", title: "a" }, { type: "post", title: 1 }, null, "post"];
+      return inputs.map((input) => [isMatching(post, input), isPost(input), isMatching(P.string.startsWith("p"), input)]);
+    };
+  `,
+    [[true, true, false], [false, false, false], [false, false, false], [false, false, true]],
+  )
+  assert.doesNotMatch(code, /isMatching\)?\(/, "isMatching calls must be compiled")
+})
+
+test("chained optional, and, or modifiers compile", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const classify = (input) =>
+      match(input)
+        .with({ stars: P.number.between(1, 5).optional(), tag: P.string.or(P.number) }, () => "rated")
+        .with({ name: P.string.startsWith("a").and(P.string.endsWith("z")) }, () => "az")
+        .otherwise(() => "other");
+    export const run = () => [
+      classify({ tag: "t" }),
+      classify({ stars: 3, tag: 1 }),
+      classify({ stars: 9, tag: 1 }),
+      classify({ stars: undefined, tag: true }),
+      classify({ name: "abcz" }),
+      classify({ name: "abc" }),
+    ];
+  `,
+    ["rated", "rated", "other", "other", "az", "other"],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("chained modifiers evaluate their base pattern values once", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let reads = 0;
+      const ctor = () => { reads++; return Date; };
+      const results = [new Date(0), 1].map((input) =>
+        match(input).with(P.instanceOf(ctor()).optional(), () => "date").otherwise(() => "other"));
+      return [results, reads];
+    };
+  `,
+    [["date", "other"], 2],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("modifiers missing from a pattern keep the runtime error", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      try {
+        const input = [1];
+        const isOne = (value) => value === 1;
+        return [
+          match(input).with(P.array(P.number).and(P.array()), () => "both").otherwise(() => "other"),
+          match(1).with(P.when(isOne).or(2), () => "one").otherwise(() => "other"),
+        ];
+      } catch (error) {
+        return error.constructor.name;
+      }
+    };
+  `,
+    "TypeError",
+  )
+})
+
+test("const pattern aliases resolve through chained modifiers", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, P } from "ts-pattern";
+    const post = { stars: P.number.between(1, 5).optional(), title: P.string };
+    export const run = () =>
+      [{ title: "a" }, { title: "a", stars: 3 }, { title: "a", stars: 7 }].map((input) => {
+        const response = { data: [input] };
+        return isMatching({ data: P.array(post) }, response) && isMatching(post, input);
+      });
+  `,
+    [true, true, false],
+  )
+  assert.doesNotMatch(code, /isMatching\)?\(\{/, "aliased chained patterns must compile")
+})
+
+test("records with number-rejecting key patterns skip key coercion", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const classify = (input) =>
+      match(input)
+        .with(P.record(P.string, P.number), () => "scores")
+        .with(P.record(P.union("a", "b"), P.string), () => "ab")
+        .with(P.record(P.string.select(), P.boolean), (keys) => keys)
+        .otherwise(() => "other");
+    export const run = () => [
+      classify({ 1: 2, a: 3 }),
+      classify({ a: "x", 2: "y" }),
+      classify({ a: "x", b: "y" }),
+      classify({ 7: true, k: false }),
+    ];
+  `,
+    ["scores", "other", "ab", ["7", "k"]],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+  assert.doesNotMatch(code, /Number\(/, "number-rejecting key patterns need no coercion")
+})
+
+test("inlined callbacks bind their arguments before the body runs", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let input = 1;
+      let object = { n: 1 };
+      const bumpInput = () => { input = 2; return 0; };
+      const bumpObject = () => { object = { n: 2 }; return 0; };
+      const direct = match(input).with(P.number, (value) => bumpInput() + value).otherwise(() => -1);
+      const destructured = match(object).with({ n: P.number }, ({ n }) => bumpObject() + n).otherwise(() => -1);
+      return [direct, destructured];
+    };
+  `,
+    [1, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("inlined callbacks substitute shorthand properties", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const pick = (input) => match(input).with({ error: P.select() }, (error) => ({ error })).otherwise(() => null);
+      return [pick({ error: 1 }), match(2).with(P.number, (value) => ({ value, twice: value * 2 })).otherwise(() => null)];
+    };
+  `,
+    [{ error: 1 }, { value: 2, twice: 4 }],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("only a three-argument with treats its middle function as a guard", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      const input = 1;
+      return [
+        match(input).with(1, 2, () => false, () => "pattern").otherwise(() => "other"),
+        match(input).with(1, () => false, () => "guard").otherwise(() => "other"),
+      ];
+    };
+  `,
+    ["pattern", "other"],
+  )
+  return code
+})
+
+for (const declaration of ["arrow", "ternary", "initializer"]) {
+  test(`${declaration} nested patterns read each property once`, async () => {
+    const match = `match(input)
+      .with({ a: { b: 1, c: P.union(2, 3) }, d: P.nullish }, () => "nested")
+      .with({ a: { b: P.select() } }, (b) => b)`
+    const code = await assertEquivalent(
+      `
+      import { match, P } from "ts-pattern";
+      export const run = () => {
+        const reads = [];
+        const input = {
+          get a() { reads.push("a"); return { get b() { reads.push("b"); return 1; }, c: 4 }; },
+          get d() { reads.push("d"); return null; },
+        };
+        const select = ${
+          declaration === "arrow"
+            ? `(input) => ${match}.otherwise(() => "none")`
+            : declaration === "ternary"
+            ? `(input) => [${match}.otherwise(() => "none")][0]`
+            : `(input) => { const result = ${match}.exhaustive(); return result; }`
+        };
+        return [select(input), reads];
+      };
+    `,
+      [1, ["a", "b", "a", "b"]],
+    )
+    assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+  })
+}
+
+test("hoisted expression temporaries survive re-entrant matches", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, match, P } from "ts-pattern";
+    // The predicate re-enters the match before the outer test reads its
+    // temporary for \`child\` again.
+    const check = (node) => [
+      match(node)
+        .with({ child: { deeper: P.when((deeper) => { if (deeper) check(deeper); return true; }), tag: "x" } }, () => "ok")
+        .otherwise(() => "bad"),
+    ][0];
+    const holds = (node) =>
+      isMatching({ child: { deeper: P.when((deeper) => { if (deeper) holds(deeper); return true; }), tag: "x" } }, node);
+    export const run = () => {
+      const tree = { child: { deeper: { child: { deeper: null, tag: "y" } }, tag: "x" } };
+      return [check(tree), holds(tree)];
+    };
+  `,
+    ["ok", true],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+  assert.doesNotMatch(code, /\)\(undefined/, "function bodies declare the temporaries")
+})
+
+test("const object patterns that escape are not inlined", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const escaped = { type: "a" };
+    const inner = { type: "a" };
+    const outer = { inner: inner };
+    const holder = { value: outer };
+    const mutate = (value) => { value.type = "b"; };
+    mutate(escaped);
+    mutate(holder.value.inner);
+    const kept = { type: "a" };
+    export const run = () => {
+      const direct = (input) => match(input).with(escaped, () => "escaped").otherwise(() => "other");
+      const transitive = (input) => match(input).with(outer, () => "transitive").otherwise(() => "other");
+      const pattern = (input) => match(input).with(P.union(kept), () => "kept").otherwise(() => "other");
+      return [direct({ type: "b" }), transitive({ inner: { type: "b" } }), pattern({ type: "a" })];
+    };
+  `,
+    ["escaped", "transitive", "kept"],
+  )
+  assert.match(code, /=== "a"/, "patterns used only as patterns still compile")
+})
