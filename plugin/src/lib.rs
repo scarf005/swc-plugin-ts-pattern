@@ -61,6 +61,16 @@ enum Fallback {
     Exhaustive,
 }
 
+/// How `lower_match` handled an expression.
+enum Lowered {
+    /// Statements that replace the expression's statement.
+    Stmts(Vec<Stmt>),
+    /// The expression was lowered, or left as is, and fully visited.
+    InPlace,
+    /// Not a match chain; the caller visits it.
+    NotMatch,
+}
+
 /// Where a statement match delivers its result.
 #[derive(Clone)]
 enum Sink {
@@ -156,7 +166,6 @@ impl VisitMut for TsPatternTransformer {
     }
 
     fn visit_mut_block_stmt(&mut self, block: &mut BlockStmt) {
-        block.visit_mut_children_with(self);
         block.stmts = self.rewrite_block_stmts(std::mem::take(&mut block.stmts));
     }
 
@@ -175,18 +184,18 @@ impl VisitMut for TsPatternTransformer {
     }
 
     fn visit_mut_arrow_expr(&mut self, arrow: &mut ArrowExpr) {
-        if let BlockStmtOrExpr::Expr(expr) = &*arrow.body {
-            if let Some(chain) = self.parse_match_chain(expr) {
-                let pending_import_before = self.needs_non_exhaustive_error_import;
-                if let Some(stmts) = self.compile_arrow_match_stmts(chain) {
+        arrow.params.visit_mut_with(self);
+        if let BlockStmtOrExpr::Expr(expr) = &mut *arrow.body {
+            match self.lower_match(expr, &Sink::Return) {
+                Lowered::Stmts(stmts) => {
                     *arrow.body = BlockStmtOrExpr::BlockStmt(block_stmt(stmts));
                     return;
                 }
-                self.needs_non_exhaustive_error_import = pending_import_before;
+                Lowered::InPlace => return,
+                Lowered::NotMatch => {}
             }
         }
-
-        arrow.visit_mut_children_with(self);
+        arrow.body.visit_mut_with(self);
     }
 }
 
@@ -439,7 +448,7 @@ impl TsPatternTransformer {
         if needs_prepared_expression(self, &chain) {
             return None;
         }
-        let test = self.compile_ternary_chain(chain)?;
+        let test = self.compile_ternary_chain(chain, true)?;
         Some(match call.args.len() {
             1 => arrow_expr(
                 vec![Pat::Ident(param.into())],
@@ -537,7 +546,7 @@ impl TsPatternTransformer {
         if needs_prepared_expression(self, &chain) {
             return self.compile_prepared_expression(chain);
         }
-        self.compile_ternary_chain(chain)
+        self.compile_ternary_chain(chain, true)
     }
 
     /// Evaluates the input and the values the chain's patterns and callbacks
@@ -606,7 +615,7 @@ impl TsPatternTransformer {
         let (bindings, chain) = self.prepare_chain(chain);
         let body = match chain.fallback {
             Fallback::Otherwise(_) => {
-                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain)?))
+                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain, true)?))
             }
             fallback => BlockStmtOrExpr::BlockStmt(block_stmt(self.compile_body(
                 &Sink::Return,
@@ -780,50 +789,93 @@ impl TsPatternTransformer {
         }
     }
 
+    /// Lowers matches that initialize a declaration or are returned as
+    /// statements, so their bindings need no immediately invoked arrows, and
+    /// visits everything else.
     fn rewrite_block_stmts(&mut self, stmts: Vec<Stmt>) -> Vec<Stmt> {
-        let mut rewritten = Vec::new();
-
-        for stmt in stmts {
-            match stmt {
-                Stmt::Decl(Decl::Var(mut var)) if var.decls.len() == 1 => {
-                    let decl = &var.decls[0];
-                    let Pat::Ident(_) = &decl.name else {
-                        rewritten.push(Stmt::Decl(Decl::Var(var)));
-                        continue;
-                    };
-                    let Some(init) = &decl.init else {
-                        rewritten.push(Stmt::Decl(Decl::Var(var)));
-                        continue;
-                    };
-                    let Some(chain) = self.parse_match_chain(init) else {
-                        rewritten.push(Stmt::Decl(Decl::Var(var)));
+        let mut rewritten = Vec::with_capacity(stmts.len());
+        for mut stmt in stmts {
+            let lowered = match &mut stmt {
+                Stmt::Decl(Decl::Var(var))
+                    if var.decls.len() == 1 && matches!(var.decls[0].name, Pat::Ident(_)) =>
+                {
+                    let Some(init) = &mut var.decls[0].init else {
+                        rewritten.push(stmt);
                         continue;
                     };
                     let result = private_ident!("_tsPatternResult");
-                    let pending_import_before = self.needs_non_exhaustive_error_import;
-                    let Some(mut assign_stmts) =
-                        self.compile_assign_match_stmts(ident_expr(&result), chain)
-                    else {
-                        self.needs_non_exhaustive_error_import = pending_import_before;
-                        rewritten.push(Stmt::Decl(Decl::Var(var)));
+                    let lowered = self.lower_match(init, &Sink::Assign(ident_expr(&result)));
+                    if let Lowered::Stmts(stmts) = lowered {
+                        // Initialize the original binding only after the match
+                        // succeeds. Declaring it earlier would end its TDZ and
+                        // turn const into let.
+                        **init = ident_expr(&result);
+                        rewritten.push(let_decl(result));
+                        rewritten.extend(stmts);
+                        rewritten.push(stmt);
                         continue;
-                    };
-
-                    // Initialize the original binding only after the match succeeds.
-                    // Declaring it earlier would end its TDZ and turn const into let.
-                    var.decls[0].init = Some(Box::new(ident_expr(&result)));
-                    rewritten.push(let_decl(result));
-                    rewritten.append(&mut assign_stmts);
-                    rewritten.push(Stmt::Decl(Decl::Var(var)));
+                    }
+                    lowered
                 }
-                other => rewritten.push(other),
+                Stmt::Return(ReturnStmt { arg: Some(arg), .. }) => {
+                    match self.lower_match(arg, &Sink::Return) {
+                        Lowered::Stmts(stmts) => {
+                            rewritten.extend(stmts);
+                            continue;
+                        }
+                        lowered => lowered,
+                    }
+                }
+                _ => Lowered::NotMatch,
+            };
+            if let Lowered::NotMatch = lowered {
+                stmt.visit_mut_with(self);
             }
+            rewritten.push(stmt);
         }
-
         rewritten
     }
 
-    fn compile_ternary_chain(&mut self, chain: MatchChain) -> Option<Expr> {
+    /// Lowers a match chain whose result goes to `sink`, after compiling
+    /// matches nested in its arguments. Assignments keep a conditional
+    /// expression when it needs no immediately invoked arrows.
+    fn lower_match(&mut self, expr: &mut Expr, sink: &Sink) -> Lowered {
+        if self.parse_match_chain(expr).is_none() {
+            return Lowered::NotMatch;
+        }
+        // Nested matches compile first, so handlers that held them can inline.
+        visit_chain_args(expr, self);
+        let Some(chain) = self.parse_match_chain(expr) else {
+            return Lowered::InPlace;
+        };
+        let pending_import_before = self.needs_non_exhaustive_error_import;
+        if let Sink::Assign(target) = sink {
+            if !needs_prepared_expression(self, &chain) {
+                if let Some(compiled) = self.compile_ternary_chain(chain, false) {
+                    *expr = compiled;
+                    return Lowered::InPlace;
+                }
+            }
+            let chain = self.parse_match_chain(expr).expect("parsed above");
+            if let Some(stmts) = self.compile_assign_match_stmts(target.clone(), chain) {
+                return Lowered::Stmts(stmts);
+            }
+        } else if let Some(stmts) = self.compile_arrow_match_stmts(chain) {
+            return Lowered::Stmts(stmts);
+        }
+        self.needs_non_exhaustive_error_import = pending_import_before;
+        // Fall back to an expression, which may need arrows.
+        let chain = self.parse_match_chain(expr).expect("parsed above");
+        match self.compile_chain(chain) {
+            Some(compiled) => *expr = compiled,
+            None => self.needs_non_exhaustive_error_import = pending_import_before,
+        }
+        Lowered::InPlace
+    }
+
+    /// Lowers a chain to nested conditionals. Arms that bind captures need an
+    /// immediately invoked arrow, allowed only with `allow_arrows`.
+    fn compile_ternary_chain(&mut self, chain: MatchChain, allow_arrows: bool) -> Option<Expr> {
         if !can_inline_input(&chain.input) || !matches!(chain.fallback, Fallback::Otherwise(_)) {
             return None;
         }
@@ -844,6 +896,8 @@ impl TsPatternTransformer {
             );
             expression = if captures.is_empty() {
                 branch
+            } else if !allow_arrows {
+                return None;
             } else {
                 // An expression cannot declare the capture bindings.
                 let args = vec![undefined_expr(self.unresolved_ctxt); captures.len()];
@@ -1970,6 +2024,22 @@ fn is_effectful_expr(expr: &Expr) -> bool {
             .any(|elem| elem.spread.is_some() || is_effectful_expr(&elem.expr)),
         Expr::Paren(paren) => is_effectful_expr(&paren.expr),
         _ => false,
+    }
+}
+
+/// Visits the arguments of every call along a match chain, leaving the chain
+/// itself for the caller to lower.
+fn visit_chain_args(expr: &mut Expr, visitor: &mut impl VisitMut) {
+    let mut current = expr;
+    while let Expr::Call(call) = current {
+        call.args.visit_mut_with(visitor);
+        let Callee::Expr(callee) = &mut call.callee else {
+            return;
+        };
+        let Expr::Member(member) = &mut **callee else {
+            return;
+        };
+        current = &mut member.obj;
     }
 }
 
@@ -3869,6 +3939,25 @@ export const run = (input: unknown) => match(input).with(P.instanceOf(Date), () 
         );
         assert!(output.contains("return \"date\""), "{output}");
         assert!(!output.contains(")(input"), "{output}");
+    }
+
+    #[test]
+    fn lowers_capturing_initializers_and_returns_to_statements() {
+        let output = transform(
+            r#"import { match, P } from "ts-pattern";
+export function run(input: unknown) {
+  const name = match(input).with({ user: { name: P.select() } }, (name) => name).otherwise(() => "");
+  return match(name).with(P.string.select(), (value) => value).otherwise(() => "");
+}"#,
+        );
+
+        assert!(
+            output.contains("const name = _tsPatternResult;"),
+            "{output}"
+        );
+        assert!(output.contains("(_tsPatternUser = input.user)"), "{output}");
+        assert!(!output.contains(")(undefined"), "{output}");
+        assert!(!output.contains("match(name)"), "{output}");
     }
 
     #[test]
