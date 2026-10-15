@@ -1127,6 +1127,40 @@ impl TsPatternTransformer {
         methods.contains(&method)
     }
 
+    /// Whether `pattern` is a type test that no number can pass; testing a
+    /// number against it runs no user code.
+    fn rejects_numbers(&self, pattern: &Expr) -> bool {
+        let pattern = self.resolve_pattern_expr(pattern);
+        if let Some((call, base)) = self.select_call(pattern) {
+            // A selection matches what its inner pattern matches.
+            return match (base, call.args.as_slice()) {
+                (Some(base), _) => self.rejects_numbers(base),
+                (None, [.., inner]) if selection_name(&inner.expr).is_none() => {
+                    self.rejects_numbers(&inner.expr)
+                }
+                _ => false,
+            };
+        }
+        match self.p_api(pattern) {
+            Some(PApi::Member("string" | "symbol" | "boolean" | "bigint" | "nullish")) => true,
+            Some(PApi::Chain("string", method, _)) => {
+                matches!(
+                    method,
+                    "startsWith" | "endsWith" | "includes" | "minLength" | "length" | "maxLength"
+                )
+            }
+            Some(PApi::Call("union", call)) => {
+                call.args.iter().all(|arg| self.rejects_numbers(&arg.expr))
+            }
+            Some(_) => false,
+            None => match pattern {
+                Expr::Lit(Lit::Str(_) | Lit::Bool(_) | Lit::Null(_) | Lit::BigInt(_)) => true,
+                Expr::Ident(ident) => ident.sym == "undefined",
+                _ => false,
+            },
+        }
+    }
+
     /// Tests a nested pattern that must not contain selections.
     fn unselected_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
         let mut selections = Vec::new();
@@ -1265,7 +1299,10 @@ impl TsPatternTransformer {
                     key_pattern,
                     &mut key_selections,
                 )?;
-                if key_selections.is_empty() {
+                if self.rejects_numbers(key_pattern) {
+                    // The numeric form of a key can never match.
+                    direct_key_test
+                } else if key_selections.is_empty() {
                     let coerced =
                         call_expr(global_ident("Number", ctxt), vec![ident_expr(&key_ident)]);
                     ordered_or(

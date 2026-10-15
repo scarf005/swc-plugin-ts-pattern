@@ -956,3 +956,26 @@ test("const pattern aliases resolve through chained modifiers", async () => {
   )
   assert.doesNotMatch(code, /isMatching\)?\(\{/, "aliased chained patterns must compile")
 })
+
+test("records with number-rejecting key patterns skip key coercion", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const classify = (input) =>
+      match(input)
+        .with(P.record(P.string, P.number), () => "scores")
+        .with(P.record(P.union("a", "b"), P.string), () => "ab")
+        .with(P.record(P.string.select(), P.boolean), (keys) => keys)
+        .otherwise(() => "other");
+    export const run = () => [
+      classify({ 1: 2, a: 3 }),
+      classify({ a: "x", 2: "y" }),
+      classify({ a: "x", b: "y" }),
+      classify({ 7: true, k: false }),
+    ];
+  `,
+    ["scores", "other", "ab", ["7", "k"]],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+  assert.doesNotMatch(code, /Number\(/, "number-rejecting key patterns need no coercion")
+})
