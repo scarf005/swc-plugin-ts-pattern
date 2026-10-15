@@ -667,6 +667,7 @@ impl TsPatternTransformer {
     }
 
     /// An expression cannot declare constants, so prepared bindings become
+    /// temporaries of the enclosing function or, where none can be declared,
     /// the parameters of an immediately invoked arrow.
     fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
         let (bindings, chain) = self.prepare_chain(chain);
