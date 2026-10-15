@@ -1922,7 +1922,9 @@ fn parse_with_arm(call: &CallExpr) -> Option<MatchArm> {
         .map(|arg| arg.expr.clone())
         .collect::<Vec<_>>();
     let handler = args.pop()?;
-    let guard = if args.len() >= 2 && is_function_expr(args.last()?) {
+    // ts-pattern reads `.with(pattern, guard, handler)` only with exactly
+    // three arguments; otherwise every argument before the handler is a pattern.
+    let guard = if args.len() == 2 && is_function_expr(&args[1]) {
         args.pop()
     } else {
         None
