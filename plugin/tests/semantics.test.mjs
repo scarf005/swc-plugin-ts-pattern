@@ -1029,3 +1029,33 @@ test("only a three-argument with treats its middle function as a guard", async (
   )
   return code
 })
+
+for (const declaration of ["arrow", "ternary", "initializer"]) {
+  test(`${declaration} nested patterns read each property once`, async () => {
+    const match = `match(input)
+      .with({ a: { b: 1, c: P.union(2, 3) }, d: P.nullish }, () => "nested")
+      .with({ a: { b: P.select() } }, (b) => b)`
+    const code = await assertEquivalent(
+      `
+      import { match, P } from "ts-pattern";
+      export const run = () => {
+        const reads = [];
+        const input = {
+          get a() { reads.push("a"); return { get b() { reads.push("b"); return 1; }, c: 4 }; },
+          get d() { reads.push("d"); return null; },
+        };
+        const select = ${
+          declaration === "arrow"
+            ? `(input) => ${match}.otherwise(() => "none")`
+            : declaration === "ternary"
+            ? `(input) => [${match}.otherwise(() => "none")][0]`
+            : `(input) => { const result = ${match}.exhaustive(); return result; }`
+        };
+        return [select(input), reads];
+      };
+    `,
+      [1, ["a", "b", "a", "b"]],
+    )
+    assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+  })
+}
