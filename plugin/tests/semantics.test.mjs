@@ -1083,3 +1083,27 @@ test("hoisted expression temporaries survive re-entrant matches", async () => {
   assert.doesNotMatch(code, /\.with\(/)
   assert.doesNotMatch(code, /\)\(undefined/, "function bodies declare the temporaries")
 })
+
+test("const object patterns that escape are not inlined", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const escaped = { type: "a" };
+    const inner = { type: "a" };
+    const outer = { inner: inner };
+    const holder = { value: outer };
+    const mutate = (value) => { value.type = "b"; };
+    mutate(escaped);
+    mutate(holder.value.inner);
+    const kept = { type: "a" };
+    export const run = () => {
+      const direct = (input) => match(input).with(escaped, () => "escaped").otherwise(() => "other");
+      const transitive = (input) => match(input).with(outer, () => "transitive").otherwise(() => "other");
+      const pattern = (input) => match(input).with(P.union(kept), () => "kept").otherwise(() => "other");
+      return [direct({ type: "b" }), transitive({ inner: { type: "b" } }), pattern({ type: "a" })];
+    };
+  `,
+    ["escaped", "transitive", "kept"],
+  )
+  assert.match(code, /=== "a"/, "patterns used only as patterns still compile")
+})
