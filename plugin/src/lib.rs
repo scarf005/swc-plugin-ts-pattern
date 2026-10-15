@@ -1643,20 +1643,29 @@ struct EffectDetector {
 
 impl Visit for EffectDetector {
     fn visit_expr(&mut self, expr: &Expr) {
-        if matches!(
-            expr,
-            Expr::Call(_)
-                | Expr::New(_)
-                | Expr::Assign(_)
-                | Expr::Update(_)
-                | Expr::Await(_)
-                | Expr::Yield(_)
-                | Expr::TaggedTpl(_)
-                | Expr::Seq(_)
-        ) {
+        if runs_code(expr) || matches!(expr, Expr::Seq(_)) {
             self.effect = true;
         }
         expr.visit_children_with(self);
+    }
+}
+
+/// Whether evaluating this node itself calls or mutates something.
+fn runs_code(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(_)
+        | Expr::New(_)
+        | Expr::Assign(_)
+        | Expr::Update(_)
+        | Expr::Await(_)
+        | Expr::Yield(_)
+        | Expr::TaggedTpl(_)
+        | Expr::Class(_)
+        | Expr::JSXElement(_)
+        | Expr::JSXFragment(_) => true,
+        Expr::Unary(unary) => unary.op == UnaryOp::Delete,
+        Expr::OptChain(chain) => matches!(&*chain.base, OptChainBase::Call(_)),
+        _ => false,
     }
 }
 
@@ -2708,34 +2717,65 @@ fn collect_pat_bindings(param: &Pat, value: Expr, bindings: &mut Vec<(Id, Expr)>
     }
 }
 
+/// Substituting arguments delays their evaluation to each use, which is
+/// unobservable only when the body runs no code before them and nested
+/// functions do not capture them. An identifier or literal may be read any
+/// number of times; other arguments must be read exactly once.
 fn is_simple_inline_body(body: &Expr, bindings: &[(Id, Expr)]) -> bool {
     let mut usage = BindingUsage {
-        bindings: bindings.iter().map(|(id, _)| id.clone()).collect(),
+        bindings,
         counts: vec![0; bindings.len()],
-        has_mutation: false,
+        unsafe_body: false,
+        function_depth: 0,
     };
     body.visit_with(&mut usage);
-    !usage.has_mutation && usage.counts.iter().all(|count| *count == 1)
+    !usage.unsafe_body
+        && usage
+            .counts
+            .iter()
+            .zip(bindings)
+            .all(|(count, (_, value))| {
+                *count == 1 || matches!(value, Expr::Ident(_) | Expr::Lit(_))
+            })
 }
 
-struct BindingUsage {
-    bindings: Vec<Id>,
+struct BindingUsage<'a> {
+    bindings: &'a [(Id, Expr)],
     counts: Vec<usize>,
-    has_mutation: bool,
+    unsafe_body: bool,
+    function_depth: usize,
 }
 
-impl Visit for BindingUsage {
+impl BindingUsage<'_> {
+    fn count(&mut self, ident: &Ident) {
+        let id = ident.to_id();
+        if let Some(index) = self.bindings.iter().position(|(binding, _)| *binding == id) {
+            if self.function_depth > 0 {
+                self.unsafe_body = true;
+            }
+            self.counts[index] += 1;
+        }
+    }
+}
+
+impl Visit for BindingUsage<'_> {
+    fn visit_prop(&mut self, prop: &Prop) {
+        if let Prop::Shorthand(ident) = prop {
+            self.count(ident);
+        }
+        prop.visit_children_with(self);
+    }
+
     fn visit_expr(&mut self, expr: &Expr) {
         match expr {
-            Expr::Ident(ident) => {
-                if let Some(index) = self.bindings.iter().position(|id| *id == ident.to_id()) {
-                    self.counts[index] += 1;
-                }
+            Expr::Ident(ident) => self.count(ident),
+            Expr::Arrow(_) | Expr::Fn(_) => {
+                self.function_depth += 1;
+                expr.visit_children_with(self);
+                self.function_depth -= 1;
+                return;
             }
-            Expr::Assign(_) | Expr::Update(_) => {
-                self.has_mutation = true;
-            }
-            Expr::Arrow(_) | Expr::Fn(_) | Expr::Class(_) => return,
+            _ if self.function_depth == 0 && runs_code(expr) => self.unsafe_body = true,
             _ => {}
         }
 
@@ -2762,6 +2802,21 @@ impl VisitMut for InlineBindings {
             Expr::Arrow(_) | Expr::Fn(_) | Expr::Class(_) => {}
             _ => expr.visit_mut_children_with(self),
         }
+    }
+
+    fn visit_mut_prop(&mut self, prop: &mut Prop) {
+        if let Prop::Shorthand(ident) = prop {
+            let id = ident.to_id();
+            if let Some((_, replacement)) = self.bindings.iter().find(|(binding, _)| *binding == id)
+            {
+                *prop = Prop::KeyValue(KeyValueProp {
+                    key: PropName::Ident(ident.clone().into()),
+                    value: Box::new(replacement.clone()),
+                });
+                return;
+            }
+        }
+        prop.visit_mut_children_with(self);
     }
 }
 
@@ -3560,13 +3615,24 @@ const result = match(input).with({ score: P.when((score): score is 5 => score ==
     }
 
     #[test]
-    fn keeps_complex_p_when_predicate_call() {
+    fn inlines_multi_use_p_when_predicate_on_identifier() {
         let output = transform(
             r#"import { match, P } from "ts-pattern";
 const result = match(input).with(P.when((value) => value > 0 && value < 10), () => "ok").otherwise(() => "other");"#,
         );
 
-        assert!(output.contains("=>value > 0 && value < 10"), "{output}");
+        assert!(output.contains("input > 0 && input < 10"), "{output}");
+        assert!(!output.contains(")(input)"), "{output}");
+    }
+
+    #[test]
+    fn keeps_p_when_predicate_call_that_runs_code() {
+        let output = transform(
+            r#"import { match, P } from "ts-pattern";
+const result = match(input).with(P.when((value) => check(value)), () => "ok").otherwise(() => "other");"#,
+        );
+
+        assert!(output.contains("=>check(value)"), "{output}");
         assert!(output.contains(")(input)"), "{output}");
     }
 

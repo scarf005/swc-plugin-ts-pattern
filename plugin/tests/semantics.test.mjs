@@ -987,13 +987,28 @@ test("inlined callbacks bind their arguments before the body runs", async () => 
     export const run = () => {
       let input = 1;
       let object = { n: 1 };
-      const bump = () => { input = 2; object = { n: 2 }; return 0; };
-      const direct = match(input).with(P.number, (value) => bump() + value).otherwise(() => -1);
-      const destructured = match(object).with({ n: P.number }, ({ n }) => bump() + n).otherwise(() => -1);
+      const bumpInput = () => { input = 2; return 0; };
+      const bumpObject = () => { object = { n: 2 }; return 0; };
+      const direct = match(input).with(P.number, (value) => bumpInput() + value).otherwise(() => -1);
+      const destructured = match(object).with({ n: P.number }, ({ n }) => bumpObject() + n).otherwise(() => -1);
       return [direct, destructured];
     };
   `,
     [1, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("inlined callbacks substitute shorthand properties", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const pick = (input) => match(input).with({ error: P.select() }, (error) => ({ error })).otherwise(() => null);
+      return [pick({ error: 1 }), match(2).with(P.number, (value) => ({ value, twice: value * 2 })).otherwise(() => null)];
+    };
+  `,
+    [{ error: 1 }, { value: 2, twice: 4 }],
   )
   assert.doesNotMatch(code, /\.with\(/)
 })
