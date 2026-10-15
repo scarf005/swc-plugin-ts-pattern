@@ -1012,3 +1012,20 @@ test("inlined callbacks substitute shorthand properties", async () => {
   )
   assert.doesNotMatch(code, /\.with\(/)
 })
+
+test("only a three-argument with treats its middle function as a guard", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      const input = 1;
+      return [
+        match(input).with(1, 2, () => false, () => "pattern").otherwise(() => "other"),
+        match(input).with(1, () => false, () => "guard").otherwise(() => "other"),
+      ];
+    };
+  `,
+    ["pattern", "other"],
+  )
+  return code
+})
