@@ -427,6 +427,9 @@ impl TsPatternTransformer {
         let Callee::Expr(callee) = &call.callee else {
             return None;
         };
+        if has_spread_arg(call) {
+            return None;
+        }
         if let Some(name) = self.p_member(callee) {
             return Some(PApi::Call(name, call));
         }
@@ -2018,11 +2021,17 @@ fn is_function_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Arrow(_) | Expr::Fn(_))
 }
 
+/// Returns a call whose arguments are all positional; spread arguments are
+/// never lowered.
 fn as_call(expr: &Expr) -> Option<&CallExpr> {
     match expr {
-        Expr::Call(call) => Some(call),
+        Expr::Call(call) if !has_spread_arg(call) => Some(call),
         _ => None,
     }
+}
+
+fn has_spread_arg(call: &CallExpr) -> bool {
+    call.args.iter().any(|arg| arg.spread.is_some())
 }
 
 fn as_method_call(call: &CallExpr) -> Option<(String, &Expr)> {
