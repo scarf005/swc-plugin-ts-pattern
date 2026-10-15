@@ -43,6 +43,7 @@ struct TsPatternTransformer {
     hoist_scopes: Vec<Option<Vec<Ident>>>,
 }
 
+#[derive(Clone)]
 struct MatchChain {
     input: Box<Expr>,
     arms: Vec<MatchArm>,
@@ -78,7 +79,7 @@ enum Lowered {
 #[derive(Clone)]
 enum Sink {
     Return,
-    Assign(Expr),
+    Assign(Ident),
 }
 
 impl Sink {
@@ -176,10 +177,8 @@ impl VisitMut for TsPatternTransformer {
         expr.visit_mut_children_with(self);
 
         if let Some(chain) = self.parse_match_chain(expr) {
-            let pending_import_before = self.needs_non_exhaustive_error_import;
-            match self.compile_chain(chain) {
-                Some(compiled) => *expr = compiled,
-                None => self.needs_non_exhaustive_error_import = pending_import_before,
+            if let Some(compiled) = self.attempt(|this| this.compile_chain(chain)) {
+                *expr = compiled;
             }
         } else if let Some(compiled) = self.compile_is_matching(expr) {
             *expr = compiled;
@@ -728,7 +727,11 @@ impl TsPatternTransformer {
         vec![switch_stmt(input, cases)]
     }
 
-    fn compile_assign_match_stmts(&mut self, target: Expr, chain: MatchChain) -> Option<Vec<Stmt>> {
+    fn compile_assign_match_stmts(
+        &mut self,
+        target: Ident,
+        chain: MatchChain,
+    ) -> Option<Vec<Stmt>> {
         let (mut stmts, chain) =
             if can_inline_input(&chain.input) && !needs_prepared_expression(self, &chain) {
                 (Vec::new(), chain)
@@ -875,7 +878,7 @@ impl TsPatternTransformer {
                         continue;
                     };
                     let result = private_ident!("_tsPatternResult");
-                    let lowered = self.lower_match(init, &Sink::Assign(ident_expr(&result)));
+                    let lowered = self.lower_match(init, &Sink::Assign(result.clone()));
                     if let Lowered::Stmts(stmts) = lowered {
                         // Initialize the original binding only after the match
                         // succeeds. Declaring it earlier would end its TDZ and
@@ -919,29 +922,39 @@ impl TsPatternTransformer {
         let Some(chain) = self.parse_match_chain(expr) else {
             return Lowered::InPlace;
         };
-        let pending_import_before = self.needs_non_exhaustive_error_import;
-        if let Sink::Assign(target) = sink {
-            if !needs_prepared_expression(self, &chain) {
-                if let Some(compiled) = self.compile_ternary_chain(chain, false) {
-                    *expr = compiled;
-                    return Lowered::InPlace;
+        let stmts = match sink {
+            Sink::Assign(target) => {
+                if !needs_prepared_expression(self, &chain) {
+                    if let Some(compiled) =
+                        self.attempt(|this| this.compile_ternary_chain(chain.clone(), false))
+                    {
+                        *expr = compiled;
+                        return Lowered::InPlace;
+                    }
                 }
+                self.attempt(|this| this.compile_assign_match_stmts(target.clone(), chain.clone()))
             }
-            let chain = self.parse_match_chain(expr).expect("parsed above");
-            if let Some(stmts) = self.compile_assign_match_stmts(target.clone(), chain) {
-                return Lowered::Stmts(stmts);
-            }
-        } else if let Some(stmts) = self.compile_arrow_match_stmts(chain) {
+            Sink::Return => self.attempt(|this| this.compile_arrow_match_stmts(chain.clone())),
+        };
+        if let Some(stmts) = stmts {
             return Lowered::Stmts(stmts);
         }
-        self.needs_non_exhaustive_error_import = pending_import_before;
         // Fall back to an expression, which may need arrows.
-        let chain = self.parse_match_chain(expr).expect("parsed above");
-        match self.compile_chain(chain) {
-            Some(compiled) => *expr = compiled,
-            None => self.needs_non_exhaustive_error_import = pending_import_before,
+        if let Some(compiled) = self.attempt(|this| this.compile_chain(chain)) {
+            *expr = compiled;
         }
         Lowered::InPlace
+    }
+
+    /// Runs a lowering attempt, dropping the error import it requested when it
+    /// fails.
+    fn attempt<T>(&mut self, lower: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        let pending_import = self.needs_non_exhaustive_error_import;
+        let lowered = lower(self);
+        if lowered.is_none() {
+            self.needs_non_exhaustive_error_import = pending_import;
+        }
+        lowered
     }
 
     /// Runs `visit` in a new declaration scope and returns the temporaries
@@ -2831,16 +2844,13 @@ fn return_stmt(expr: Expr) -> Stmt {
     })
 }
 
-fn assign_stmt(target: Expr, expr: Expr) -> Stmt {
-    Stmt::Expr(ExprStmt {
+fn assign_stmt(target: Ident, expr: Expr) -> Stmt {
+    expr_stmt(Expr::Assign(AssignExpr {
         span: DUMMY_SP,
-        expr: Box::new(Expr::Assign(AssignExpr {
-            span: DUMMY_SP,
-            op: AssignOp::Assign,
-            left: AssignTarget::try_from(Box::new(target)).expect("assign target"),
-            right: Box::new(expr),
-        })),
-    })
+        op: AssignOp::Assign,
+        left: AssignTarget::Simple(SimpleAssignTarget::Ident(target.into())),
+        right: Box::new(expr),
+    }))
 }
 
 fn if_stmt(test: Expr, cons: Stmt, alt: Option<Stmt>) -> Stmt {
