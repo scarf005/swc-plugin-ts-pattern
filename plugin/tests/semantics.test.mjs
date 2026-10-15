@@ -863,3 +863,19 @@ test("spread arm arguments keep their spread meaning", async () => {
     "number",
   )
 })
+
+test("isMatching compiles direct and curried checks", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, P } from "ts-pattern";
+    const post = { type: "post", title: P.string, stars: P.optional(P.number) };
+    const isPost = isMatching(post);
+    export const run = () => {
+      const inputs = [{ type: "post", title: "a" }, { type: "post", title: 1 }, null, "post"];
+      return inputs.map((input) => [isMatching(post, input), isPost(input), isMatching(P.string.startsWith("p"), input)]);
+    };
+  `,
+    [[true, true, false], [false, false, false], [false, false, false], [false, false, true]],
+  )
+  assert.doesNotMatch(code, /isMatching\)?\(/, "isMatching calls must be compiled")
+})
