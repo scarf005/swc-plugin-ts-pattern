@@ -246,7 +246,11 @@ impl TsPatternTransformer {
         });
         let bindings = declarators
             .filter_map(|decl| match (&decl.name, &decl.init) {
-                (Pat::Ident(ident), Some(init)) if self.safe_const_pattern(init) => {
+                // A function is never a pattern itself; it only matters inside
+                // one, e.g. `P.when(fn)`.
+                (Pat::Ident(ident), Some(init))
+                    if !is_function_expr(init) && self.safe_const_pattern(init) =>
+                {
                     Some((ident.id.to_id(), (**init).clone()))
                 }
                 _ => None,
