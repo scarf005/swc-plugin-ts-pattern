@@ -5,7 +5,7 @@ use swc_core::{
     ecma::{
         ast::*,
         utils::{private_ident, quote_ident},
-        visit::{VisitMut, VisitMutWith},
+        visit::{Visit, VisitMut, VisitMutWith, VisitWith},
     },
     plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
 };
@@ -33,19 +33,16 @@ struct TsPatternTransformer {
     needs_non_exhaustive_error_import: bool,
 }
 
-#[derive(Clone)]
 struct MatchChain {
     input: Box<Expr>,
     arms: Vec<MatchArm>,
     fallback: Fallback,
-    prepared: bool,
 }
 
 #[derive(Clone)]
 #[allow(clippy::vec_box)]
 struct MatchArm {
     patterns: Vec<Box<Expr>>,
-    handler_patterns: Vec<Box<Expr>>,
     guard: Option<Box<Expr>>,
     handler: Box<Expr>,
 }
@@ -55,6 +52,61 @@ enum Fallback {
     Otherwise(Box<Expr>),
     Matched(Box<Expr>),
     Exhaustive,
+}
+
+/// Where a statement match delivers its result.
+#[derive(Clone)]
+enum Sink {
+    Return,
+    Assign(Expr),
+}
+
+impl Sink {
+    fn deliver(&self, value: Expr) -> Stmt {
+        match self {
+            Sink::Return => return_stmt(value),
+            Sink::Assign(target) => assign_stmt(target.clone(), value),
+        }
+    }
+
+    /// Tests branches in order, then runs the fallback.
+    fn if_chain(&self, branches: Vec<(Expr, Stmt)>, fallback: Stmt) -> Vec<Stmt> {
+        match self {
+            // Returning branches need no `else`.
+            Sink::Return => branches
+                .into_iter()
+                .map(|(test, cons)| if_stmt(test, cons, None))
+                .chain([fallback])
+                .collect(),
+            Sink::Assign(_) => vec![branches
+                .into_iter()
+                .rev()
+                .fold(fallback, |alt, (test, cons)| if_stmt(test, cons, Some(alt)))],
+        }
+    }
+
+    fn end_case(&self, mut cons: Vec<Stmt>) -> Vec<Stmt> {
+        if let Sink::Assign(_) = self {
+            cons.push(break_stmt());
+        }
+        cons
+    }
+}
+
+/// The value a match tests and the input its handlers receive. They differ
+/// once a shared object prefix is cached.
+struct MatchInputs {
+    test: Expr,
+    handler: Expr,
+}
+
+impl MatchInputs {
+    fn new(input: Expr) -> Self {
+        Self {
+            test: input.clone(),
+            handler: input,
+        }
+    }
 }
 
 /// A `P` API reference, after resolving const aliases.
@@ -108,11 +160,7 @@ impl VisitMut for TsPatternTransformer {
             if let Some(chain) = self.parse_match_chain(expr) {
                 let pending_import_before = self.needs_non_exhaustive_error_import;
                 if let Some(stmts) = self.compile_arrow_match_stmts(chain) {
-                    *arrow.body = BlockStmtOrExpr::BlockStmt(BlockStmt {
-                        span: DUMMY_SP,
-                        ctxt: Default::default(),
-                        stmts,
-                    });
+                    *arrow.body = BlockStmtOrExpr::BlockStmt(block_stmt(stmts));
                     return;
                 }
                 self.needs_non_exhaustive_error_import = pending_import_before;
@@ -202,8 +250,7 @@ impl TsPatternTransformer {
         }
 
         let bindings = self.const_bindings.keys().cloned().collect();
-        let mut snapshot = module.clone();
-        snapshot.visit_mut_with(&mut MutationCollector {
+        module.visit_with(&mut MutationCollector {
             bindings: &bindings,
             mutated: &mut self.mutated_bindings,
         });
@@ -314,7 +361,6 @@ impl TsPatternTransformer {
             input,
             arms,
             fallback,
-            prepared: false,
         })
     }
 
@@ -435,7 +481,7 @@ impl TsPatternTransformer {
     }
 
     fn compile_chain(&mut self, chain: MatchChain) -> Option<Expr> {
-        if !chain.prepared && needs_prepared_expression(self, &chain) {
+        if needs_prepared_expression(self, &chain) {
             return self.compile_prepared_expression(chain);
         }
         self.compile_ternary_chain(chain)
@@ -467,7 +513,6 @@ impl TsPatternTransformer {
 
             arms.push(MatchArm {
                 patterns,
-                handler_patterns: Vec::new(),
                 guard,
                 handler: Box::new(ident_expr(&handler_ident)),
             });
@@ -483,43 +528,28 @@ impl TsPatternTransformer {
             fallback => fallback,
         };
 
-        let prepared_input = Box::new(ident_expr(&input_ident));
+        let input = ident_expr(&input_ident);
         let body = match fallback {
-            Fallback::Otherwise(handler) => {
-                let body = self.compile_ternary_chain(MatchChain {
-                    input: prepared_input,
+            Fallback::Otherwise(_) => {
+                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(MatchChain {
+                    input: Box::new(input),
                     arms,
-                    fallback: Fallback::Otherwise(handler),
-                    prepared: true,
-                })?;
-                BlockStmtOrExpr::Expr(Box::new(body))
+                    fallback,
+                })?))
             }
-            fallback => {
-                let input = *prepared_input;
-                let stmts =
-                    self.compile_return_body(input.clone(), input, arms, fallback, false)?;
-                BlockStmtOrExpr::BlockStmt(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    stmts,
-                })
-            }
+            fallback => BlockStmtOrExpr::BlockStmt(block_stmt(self.compile_body(
+                &Sink::Return,
+                &MatchInputs::new(input),
+                arms,
+                fallback,
+                false,
+            )?)),
         };
-        let arrow = Expr::Arrow(ArrowExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: params
-                .into_iter()
-                .map(|ident| Pat::Ident(ident.into()))
-                .collect(),
-            body: Box::new(body),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        });
-
-        Some(call_expr(paren_expr(arrow), args))
+        let params = params
+            .into_iter()
+            .map(|ident| Pat::Ident(ident.into()))
+            .collect();
+        Some(call_expr(paren_expr(arrow_expr(params, body)), args))
     }
 
     fn compile_switch_stmts(&mut self, chain: MatchChain) -> Vec<Stmt> {
@@ -533,35 +563,22 @@ impl TsPatternTransformer {
             let mut arm_patterns = arm.patterns.into_iter().peekable();
 
             while let Some(pattern) = arm_patterns.next() {
-                let consequent = if arm_patterns.peek().is_some() {
+                // Patterns of one arm fall through to its handler.
+                let cons = if arm_patterns.peek().is_some() {
                     Vec::new()
                 } else {
                     vec![return_stmt(handler_call.clone())]
                 };
-
-                cases.push(SwitchCase {
-                    span: DUMMY_SP,
-                    test: Some(pattern),
-                    cons: consequent,
-                });
+                cases.push(switch_case(Some(*pattern), cons));
             }
         }
 
-        let exhaustive_error_callee =
-            matches!(chain.fallback, Fallback::Exhaustive).then(|| self.exhaustive_error_callee());
-        cases.push(SwitchCase {
-            span: DUMMY_SP,
-            test: None,
-            cons: fallback_stmts(chain.fallback, input_expr, exhaustive_error_callee),
-        });
+        let fallback = self.fallback_stmt(&Sink::Return, chain.fallback, input_expr);
+        cases.push(switch_case(None, vec![fallback]));
 
         vec![
             const_stmt(input_ident.clone(), *chain.input),
-            Stmt::Switch(SwitchStmt {
-                span: DUMMY_SP,
-                discriminant: Box::new(ident_expr(&input_ident)),
-                cases,
-            }),
+            switch_stmt(ident_expr(&input_ident), cases),
         ]
     }
 
@@ -569,163 +586,14 @@ impl TsPatternTransformer {
         let input_ident = private_ident!("_tsPatternInput");
         let input_expr = ident_expr(&input_ident);
         let mut stmts = vec![const_stmt(input_ident, *chain.input)];
-
-        stmts.extend(self.compile_return_body(
-            input_expr.clone(),
-            input_expr,
+        stmts.extend(self.compile_body(
+            &Sink::Return,
+            &MatchInputs::new(input_expr),
             chain.arms,
             chain.fallback,
             false,
         )?);
         Some(stmts)
-    }
-
-    fn compile_return_body(
-        &mut self,
-        match_input_expr: Expr,
-        handler_input_expr: Expr,
-        arms: Vec<MatchArm>,
-        fallback: Fallback,
-        known_match_object: bool,
-    ) -> Option<Vec<Stmt>> {
-        if known_match_object {
-            if let Some((prefix, prefixed_arms)) = common_object_prefix(&arms) {
-                let cached = private_ident_for_prop("_tsPattern", &prefix);
-                let cached_expr = ident_expr(&cached);
-                let mut stmts = vec![const_stmt(
-                    cached,
-                    prop_access(match_input_expr.clone(), &prefix)?,
-                )];
-                stmts.extend(self.compile_return_body(
-                    cached_expr,
-                    handler_input_expr,
-                    prefixed_arms,
-                    fallback,
-                    false,
-                )?);
-                return Some(stmts);
-            }
-        }
-
-        if let Some(path) = common_switch_path(&arms) {
-            return self.compile_return_path_switch(
-                match_input_expr,
-                handler_input_expr,
-                arms,
-                fallback,
-                &path,
-                known_match_object,
-            );
-        }
-
-        let mut stmts = Vec::new();
-
-        for (arm_index, arm) in arms.into_iter().enumerate() {
-            let (test, handler_input, captures) = self.ternary_arm_parts(
-                match_input_expr.clone(),
-                handler_input_expr.clone(),
-                &arm,
-                arm_index,
-            )?;
-            for capture in captures {
-                stmts.push(var_without_init(VarDeclKind::Let, capture));
-            }
-            stmts.push(Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(test),
-                cons: Box::new(return_stmt(handler_result(
-                    arm.handler,
-                    vec![handler_input, handler_input_expr.clone()],
-                ))),
-                alt: None,
-            }));
-        }
-
-        let exhaustive_error_callee =
-            matches!(fallback, Fallback::Exhaustive).then(|| self.exhaustive_error_callee());
-        stmts.extend(fallback_stmts(
-            fallback,
-            handler_input_expr,
-            exhaustive_error_callee,
-        ));
-        Some(stmts)
-    }
-
-    fn compile_return_path_switch(
-        &mut self,
-        match_input_expr: Expr,
-        handler_input_expr: Expr,
-        arms: Vec<MatchArm>,
-        fallback: Fallback,
-        path: &[PropName],
-        known_match_object: bool,
-    ) -> Option<Vec<Stmt>> {
-        let switch_expr = prop_access_path(match_input_expr.clone(), path)?;
-        let exhaustive_error_callee =
-            matches!(fallback, Fallback::Exhaustive).then(|| self.exhaustive_error_callee());
-        let default_fallback = fallback_stmts(
-            fallback.clone(),
-            handler_input_expr.clone(),
-            exhaustive_error_callee.clone(),
-        );
-        let mut cases = Vec::new();
-
-        for (value, group) in group_arms_by_path(arms, path)? {
-            let (group_arms, group_fallback) = strip_group_arms(group, path, fallback.clone())?;
-            let cons = if group_arms.is_empty() {
-                fallback_stmts(
-                    group_fallback.clone(),
-                    handler_input_expr.clone(),
-                    matches!(group_fallback, Fallback::Exhaustive)
-                        .then(|| self.exhaustive_error_callee()),
-                )
-            } else {
-                self.compile_return_body(
-                    match_input_expr.clone(),
-                    handler_input_expr.clone(),
-                    group_arms,
-                    group_fallback,
-                    true,
-                )?
-            };
-
-            cases.push(SwitchCase {
-                span: DUMMY_SP,
-                test: Some(Box::new(value)),
-                cons,
-            });
-        }
-
-        cases.push(SwitchCase {
-            span: DUMMY_SP,
-            test: None,
-            cons: default_fallback.clone(),
-        });
-
-        Some(vec![
-            Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(unary(
-                    UnaryOp::Bang,
-                    paren_expr(object_path_base_test(
-                        match_input_expr.clone(),
-                        path,
-                        known_match_object,
-                    )?),
-                )),
-                cons: Box::new(Stmt::Block(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    stmts: default_fallback,
-                })),
-                alt: None,
-            }),
-            Stmt::Switch(SwitchStmt {
-                span: DUMMY_SP,
-                discriminant: Box::new(switch_expr),
-                cases,
-            }),
-        ])
     }
 
     fn compile_assign_match_stmts(&mut self, target: Expr, chain: MatchChain) -> Option<Vec<Stmt>> {
@@ -745,11 +613,9 @@ impl TsPatternTransformer {
                 vec![const_stmt(input_ident, *chain.input)],
             )
         };
-
-        stmts.extend(self.compile_assign_body(
-            target,
-            input_expr.clone(),
-            input_expr,
+        stmts.extend(self.compile_body(
+            &Sink::Assign(target),
+            &MatchInputs::new(input_expr),
             chain.arms,
             chain.fallback,
             false,
@@ -757,11 +623,12 @@ impl TsPatternTransformer {
         Some(stmts)
     }
 
-    fn compile_assign_body(
+    /// Lowers arms to statements. `known_match_object` means an enclosing
+    /// switch already proved `inputs.test` is an object.
+    fn compile_body(
         &mut self,
-        target: Expr,
-        match_input_expr: Expr,
-        handler_input_expr: Expr,
+        sink: &Sink,
+        inputs: &MatchInputs,
         arms: Vec<MatchArm>,
         fallback: Fallback,
         known_match_object: bool,
@@ -769,28 +636,23 @@ impl TsPatternTransformer {
         if known_match_object {
             if let Some((prefix, prefixed_arms)) = common_object_prefix(&arms) {
                 let cached = private_ident_for_prop("_tsPattern", &prefix);
-                let cached_expr = ident_expr(&cached);
                 let mut stmts = vec![const_stmt(
-                    cached,
-                    prop_access(match_input_expr.clone(), &prefix)?,
+                    cached.clone(),
+                    prop_access(inputs.test.clone(), &prefix)?,
                 )];
-                stmts.extend(self.compile_assign_body(
-                    target,
-                    cached_expr,
-                    handler_input_expr,
-                    prefixed_arms,
-                    fallback,
-                    false,
-                )?);
+                let inputs = MatchInputs {
+                    test: ident_expr(&cached),
+                    handler: inputs.handler.clone(),
+                };
+                stmts.extend(self.compile_body(sink, &inputs, prefixed_arms, fallback, false)?);
                 return Some(stmts);
             }
         }
 
         if let Some(path) = common_switch_path(&arms) {
-            return self.compile_assign_path_switch(
-                target,
-                match_input_expr,
-                handler_input_expr,
+            return self.compile_path_switch(
+                sink,
+                inputs,
                 arms,
                 fallback,
                 &path,
@@ -798,112 +660,82 @@ impl TsPatternTransformer {
             );
         }
 
-        let mut current = fallback_stmt(
-            target.clone(),
-            fallback,
-            handler_input_expr.clone(),
-            &mut || self.exhaustive_error_callee(),
-        );
-        let mut declarations = Vec::new();
-
-        for (arm_index, arm) in arms.into_iter().enumerate().rev() {
-            let (test, handler_input, captures) = self.ternary_arm_parts(
-                match_input_expr.clone(),
-                handler_input_expr.clone(),
-                &arm,
-                arm_index,
-            )?;
-            declarations.extend(
-                captures
-                    .into_iter()
-                    .map(|capture| var_without_init(VarDeclKind::Let, capture)),
-            );
-            current = Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(test),
-                cons: Box::new(assign_stmt(
-                    target.clone(),
-                    handler_result(arm.handler, vec![handler_input, handler_input_expr.clone()]),
-                )),
-                alt: Some(Box::new(current)),
-            });
+        let mut stmts = Vec::new();
+        let mut branches = Vec::with_capacity(arms.len());
+        for (arm_index, arm) in arms.into_iter().enumerate() {
+            let (test, handler_input, captures) =
+                self.arm_parts(inputs.test.clone(), inputs.handler.clone(), &arm, arm_index)?;
+            stmts.extend(captures.into_iter().map(let_decl));
+            let result = handler_result(arm.handler, vec![handler_input, inputs.handler.clone()]);
+            branches.push((test, sink.deliver(result)));
         }
-
-        declarations.push(current);
-        Some(declarations)
+        let fallback = self.fallback_stmt(sink, fallback, inputs.handler.clone());
+        stmts.extend(sink.if_chain(branches, fallback));
+        Some(stmts)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn compile_assign_path_switch(
+    fn compile_path_switch(
         &mut self,
-        target: Expr,
-        match_input_expr: Expr,
-        handler_input_expr: Expr,
+        sink: &Sink,
+        inputs: &MatchInputs,
         arms: Vec<MatchArm>,
         fallback: Fallback,
         path: &[PropName],
         known_match_object: bool,
     ) -> Option<Vec<Stmt>> {
-        let switch_expr = prop_access_path(match_input_expr.clone(), path)?;
-        let default_fallback = fallback_stmt(
-            target.clone(),
-            fallback.clone(),
-            handler_input_expr.clone(),
-            &mut || self.exhaustive_error_callee(),
+        let discriminant = prop_access_path(inputs.test.clone(), path)?;
+        let guard = unary(
+            UnaryOp::Bang,
+            paren_expr(object_path_base_test(
+                inputs.test.clone(),
+                path,
+                known_match_object,
+            )?),
         );
+        let default = self.fallback_stmt(sink, fallback.clone(), inputs.handler.clone());
         let mut cases = Vec::new();
 
         for (value, group) in group_arms_by_path(arms, path)? {
             let (group_arms, group_fallback) = strip_group_arms(group, path, fallback.clone())?;
-            let mut cons = if group_arms.is_empty() {
-                vec![fallback_stmt(
-                    target.clone(),
-                    group_fallback,
-                    handler_input_expr.clone(),
-                    &mut || self.exhaustive_error_callee(),
-                )]
+            let cons = if group_arms.is_empty() {
+                vec![self.fallback_stmt(sink, group_fallback, inputs.handler.clone())]
             } else {
-                self.compile_assign_body(
-                    target.clone(),
-                    match_input_expr.clone(),
-                    handler_input_expr.clone(),
-                    group_arms,
-                    group_fallback,
-                    true,
-                )?
+                self.compile_body(sink, inputs, group_arms, group_fallback, true)?
             };
-            cons.push(break_stmt());
-
-            cases.push(SwitchCase {
-                span: DUMMY_SP,
-                test: Some(Box::new(value)),
-                cons,
-            });
+            cases.push(switch_case(Some(value), sink.end_case(cons)));
         }
+        cases.push(switch_case(None, sink.end_case(vec![default.clone()])));
 
-        cases.push(SwitchCase {
-            span: DUMMY_SP,
-            test: None,
-            cons: vec![default_fallback.clone(), break_stmt()],
-        });
+        let switch = switch_stmt(discriminant, cases);
+        Some(match sink {
+            Sink::Return => vec![
+                if_stmt(guard, Stmt::Block(block_stmt(vec![default])), None),
+                switch,
+            ],
+            Sink::Assign(_) => vec![if_stmt(guard, default, Some(switch))],
+        })
+    }
 
-        Some(vec![Stmt::If(IfStmt {
-            span: DUMMY_SP,
-            test: Box::new(unary(
-                UnaryOp::Bang,
-                paren_expr(object_path_base_test(
-                    match_input_expr.clone(),
-                    path,
-                    known_match_object,
-                )?),
-            )),
-            cons: Box::new(default_fallback),
-            alt: Some(Box::new(Stmt::Switch(SwitchStmt {
+    fn fallback_stmt(&mut self, sink: &Sink, fallback: Fallback, input: Expr) -> Stmt {
+        match fallback {
+            Fallback::Otherwise(handler) => sink.deliver(handler_result(handler, vec![input])),
+            Fallback::Matched(handler) => {
+                sink.deliver(handler_result(handler, vec![input.clone(), input]))
+            }
+            Fallback::Exhaustive => Stmt::Throw(ThrowStmt {
                 span: DUMMY_SP,
-                discriminant: Box::new(switch_expr),
-                cases,
-            }))),
-        })])
+                arg: Box::new(Expr::New(NewExpr {
+                    span: DUMMY_SP,
+                    ctxt: Default::default(),
+                    callee: Box::new(self.exhaustive_error_callee()),
+                    args: Some(vec![ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(input),
+                    }]),
+                    type_args: None,
+                })),
+            }),
+        }
     }
 
     fn rewrite_block_stmts(&mut self, stmts: Vec<Stmt>) -> Vec<Stmt> {
@@ -938,7 +770,7 @@ impl TsPatternTransformer {
                     // Initialize the original binding only after the match succeeds.
                     // Declaring it earlier would end its TDZ and turn const into let.
                     var.decls[0].init = Some(Box::new(ident_expr(&result)));
-                    rewritten.push(var_without_init(VarDeclKind::Let, result));
+                    rewritten.push(let_decl(result));
                     rewritten.append(&mut assign_stmts);
                     rewritten.push(Stmt::Decl(Decl::Var(var)));
                 }
@@ -962,7 +794,7 @@ impl TsPatternTransformer {
 
         for (arm_index, arm) in chain.arms.into_iter().enumerate().rev() {
             let (test, handler_input, captures) =
-                self.ternary_arm_parts(input.clone(), input.clone(), &arm, arm_index)?;
+                self.arm_parts(input.clone(), input.clone(), &arm, arm_index)?;
             let branch = cond_expr(
                 test,
                 handler_result(arm.handler, vec![handler_input, input.clone()]),
@@ -971,27 +803,15 @@ impl TsPatternTransformer {
             expression = if captures.is_empty() {
                 branch
             } else {
-                let params = captures.clone();
-                let arrow = Expr::Arrow(ArrowExpr {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    params: params
-                        .iter()
-                        .cloned()
-                        .map(|ident| Pat::Ident(ident.into()))
-                        .collect(),
-                    body: Box::new(BlockStmtOrExpr::Expr(Box::new(branch))),
-                    is_async: false,
-                    is_generator: false,
-                    type_params: None,
-                    return_type: None,
-                });
+                // An expression cannot declare the capture bindings.
+                let args = vec![undefined_expr(self.unresolved_ctxt); captures.len()];
+                let params = captures
+                    .into_iter()
+                    .map(|ident| Pat::Ident(ident.into()))
+                    .collect();
                 call_expr(
-                    paren_expr(arrow),
-                    params
-                        .into_iter()
-                        .map(|_| undefined_expr(self.unresolved_ctxt))
-                        .collect(),
+                    paren_expr(arrow_expr(params, BlockStmtOrExpr::Expr(Box::new(branch)))),
+                    args,
                 )
             };
         }
@@ -999,7 +819,7 @@ impl TsPatternTransformer {
         Some(expression)
     }
 
-    fn ternary_arm_parts(
+    fn arm_parts(
         &self,
         match_input: Expr,
         guard_input: Expr,
@@ -1027,7 +847,7 @@ impl TsPatternTransformer {
         };
 
         let mut test = match &arm.guard {
-            Some(guard) => and(pattern_test, guard_result(guard, guard_input)),
+            Some(guard) => and(pattern_test, predicate_result(guard, guard_input)),
             None => pattern_test,
         };
         let mut captures = Vec::with_capacity(selections.len());
@@ -1558,15 +1378,15 @@ struct MutationCollector<'a> {
     mutated: &'a mut HashSet<Id>,
 }
 
-impl VisitMut for MutationCollector<'_> {
-    fn visit_mut_expr(&mut self, expr: &mut Expr) {
+impl Visit for MutationCollector<'_> {
+    fn visit_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Assign(assign) => self.mark_assign_target(&assign.left),
             Expr::Update(update) => self.mark_expr(&update.arg),
             Expr::Unary(unary) if unary.op == UnaryOp::Delete => self.mark_expr(&unary.arg),
             _ => {}
         }
-        expr.visit_mut_children_with(self);
+        expr.visit_children_with(self);
     }
 }
 
@@ -1682,20 +1502,17 @@ fn guard_requires_snapshot(guard: &Expr) -> bool {
 }
 
 fn block_contains_effect(block: &BlockStmt) -> bool {
-    let mut effect = false;
-    let mut block = block.clone();
-    block.visit_mut_with(&mut EffectDetector {
-        effect: &mut effect,
-    });
-    effect
+    let mut detector = EffectDetector { effect: false };
+    block.visit_with(&mut detector);
+    detector.effect
 }
 
-struct EffectDetector<'a> {
-    effect: &'a mut bool,
+struct EffectDetector {
+    effect: bool,
 }
 
-impl VisitMut for EffectDetector<'_> {
-    fn visit_mut_expr(&mut self, expr: &mut Expr) {
+impl Visit for EffectDetector {
+    fn visit_expr(&mut self, expr: &Expr) {
         if matches!(
             expr,
             Expr::Call(_)
@@ -1707,9 +1524,9 @@ impl VisitMut for EffectDetector<'_> {
                 | Expr::TaggedTpl(_)
                 | Expr::Seq(_)
         ) {
-            *self.effect = true;
+            self.effect = true;
         }
-        expr.visit_mut_children_with(self);
+        expr.visit_children_with(self);
     }
 }
 
@@ -1919,7 +1736,6 @@ fn parse_with_arm(call: &CallExpr) -> Option<MatchArm> {
     };
 
     Some(MatchArm {
-        handler_patterns: args.clone(),
         patterns: args,
         guard,
         handler,
@@ -1934,7 +1750,6 @@ fn parse_when_arm(call: &CallExpr) -> Option<MatchArm> {
     let pattern = Box::new(Expr::Invalid(Invalid { span: DUMMY_SP }));
     Some(MatchArm {
         patterns: vec![pattern.clone()],
-        handler_patterns: vec![pattern],
         guard: Some(call.args[0].expr.clone()),
         handler: call.args[1].expr.clone(),
     })
@@ -2124,10 +1939,6 @@ fn number_chain_test(
     Some(and(typeof_eq(value, "number"), test))
 }
 
-fn guard_result(guard: &Expr, input_expr: Expr) -> Expr {
-    predicate_result(guard, input_expr)
-}
-
 fn predicate_result(predicate: &Expr, input_expr: Expr) -> Expr {
     match predicate {
         Expr::Arrow(ArrowExpr {
@@ -2299,7 +2110,6 @@ fn common_object_prefix(arms: &[MatchArm]) -> Option<(PropName, Vec<MatchArm>)> 
 
         stripped.push(MatchArm {
             patterns: vec![Box::new(value.clone())],
-            handler_patterns: arm.handler_patterns.clone(),
             guard: arm.guard.clone(),
             handler: arm.handler.clone(),
         });
@@ -2440,7 +2250,6 @@ fn strip_group_arms(
         match strip_literal_path(&pattern, path)? {
             Some(pattern) => stripped.push(MatchArm {
                 patterns: vec![Box::new(pattern)],
-                handler_patterns: arm.handler_patterns,
                 guard: arm.guard,
                 handler: arm.handler,
             }),
@@ -2555,42 +2364,6 @@ fn const_stmt(ident: Ident, init: Expr) -> Stmt {
     })))
 }
 
-fn fallback_stmts(
-    fallback: Fallback,
-    input_expr: Expr,
-    exhaustive_error_callee: Option<Expr>,
-) -> Vec<Stmt> {
-    match fallback {
-        Fallback::Otherwise(handler) => {
-            vec![return_stmt(handler_result(handler, vec![input_expr]))]
-        }
-        Fallback::Matched(handler) => vec![return_stmt(handler_result(
-            handler,
-            vec![input_expr.clone(), input_expr],
-        ))],
-        Fallback::Exhaustive => vec![throw_exhaustive_stmt(
-            exhaustive_error_callee.expect("exhaustive error callee"),
-            input_expr,
-        )],
-    }
-}
-
-fn throw_exhaustive_stmt(callee: Expr, input_expr: Expr) -> Stmt {
-    Stmt::Throw(ThrowStmt {
-        span: DUMMY_SP,
-        arg: Box::new(Expr::New(NewExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            callee: Box::new(callee),
-            args: Some(vec![ExprOrSpread {
-                spread: None,
-                expr: Box::new(input_expr),
-            }]),
-            type_args: None,
-        })),
-    })
-}
-
 fn return_stmt(expr: Expr) -> Stmt {
     Stmt::Return(ReturnStmt {
         span: DUMMY_SP,
@@ -2610,22 +2383,29 @@ fn assign_stmt(target: Expr, expr: Expr) -> Stmt {
     })
 }
 
-fn fallback_stmt(
-    target: Expr,
-    fallback: Fallback,
-    input_expr: Expr,
-    exhaustive_error_callee: &mut impl FnMut() -> Expr,
-) -> Stmt {
-    match fallback {
-        Fallback::Otherwise(handler) => {
-            assign_stmt(target, handler_result(handler, vec![input_expr]))
-        }
-        Fallback::Matched(handler) => assign_stmt(
-            target,
-            handler_result(handler, vec![input_expr.clone(), input_expr]),
-        ),
-        Fallback::Exhaustive => throw_exhaustive_stmt(exhaustive_error_callee(), input_expr),
+fn if_stmt(test: Expr, cons: Stmt, alt: Option<Stmt>) -> Stmt {
+    Stmt::If(IfStmt {
+        span: DUMMY_SP,
+        test: Box::new(test),
+        cons: Box::new(cons),
+        alt: alt.map(Box::new),
+    })
+}
+
+fn switch_case(test: Option<Expr>, cons: Vec<Stmt>) -> SwitchCase {
+    SwitchCase {
+        span: DUMMY_SP,
+        test: test.map(Box::new),
+        cons,
     }
+}
+
+fn switch_stmt(discriminant: Expr, cases: Vec<SwitchCase>) -> Stmt {
+    Stmt::Switch(SwitchStmt {
+        span: DUMMY_SP,
+        discriminant: Box::new(discriminant),
+        cases,
+    })
 }
 
 fn break_stmt() -> Stmt {
@@ -2635,15 +2415,11 @@ fn break_stmt() -> Stmt {
     })
 }
 
-fn var_without_init(kind: VarDeclKind, ident: Ident) -> Stmt {
+fn let_decl(ident: Ident) -> Stmt {
     Stmt::Decl(Decl::Var(Box::new(VarDecl {
         span: DUMMY_SP,
         ctxt: Default::default(),
-        kind: if kind == VarDeclKind::Var {
-            VarDeclKind::Var
-        } else {
-            VarDeclKind::Let
-        },
+        kind: VarDeclKind::Let,
         declare: false,
         decls: vec![VarDeclarator {
             span: DUMMY_SP,
@@ -2742,8 +2518,7 @@ fn is_simple_inline_body(body: &Expr, bindings: &[(Id, Expr)]) -> bool {
         counts: vec![0; bindings.len()],
         has_mutation: false,
     };
-    let mut body = body.clone();
-    body.visit_mut_with(&mut usage);
+    body.visit_with(&mut usage);
     !usage.has_mutation && usage.counts.iter().all(|count| *count == 1)
 }
 
@@ -2753,8 +2528,8 @@ struct BindingUsage {
     has_mutation: bool,
 }
 
-impl VisitMut for BindingUsage {
-    fn visit_mut_expr(&mut self, expr: &mut Expr) {
+impl Visit for BindingUsage {
+    fn visit_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Ident(ident) => {
                 if let Some(index) = self.bindings.iter().position(|id| *id == ident.to_id()) {
@@ -2768,7 +2543,7 @@ impl VisitMut for BindingUsage {
             _ => {}
         }
 
-        expr.visit_mut_children_with(self);
+        expr.visit_children_with(self);
     }
 }
 
@@ -2853,10 +2628,6 @@ fn num_lit(value: f64) -> Expr {
     }))
 }
 
-fn call_member(member: Expr, args: Vec<Expr>) -> Expr {
-    call_expr(member, args)
-}
-
 fn ident_expr(ident: &Ident) -> Expr {
     Expr::Ident(ident.clone())
 }
@@ -2915,104 +2686,60 @@ fn and(left: Expr, right: Expr) -> Expr {
     }
 }
 
+/// `left && right` that evaluates both operands.
 fn ordered_and(left: Expr, right: Expr) -> Expr {
-    let left_ident = private_ident!("_tsPatternLeftMatch");
-    let right_ident = private_ident!("_tsPatternRightMatch");
-    call_expr(
-        paren_expr(Expr::Arrow(ArrowExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: vec![],
-            body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                span: DUMMY_SP,
-                ctxt: Default::default(),
-                stmts: vec![
-                    const_stmt(left_ident.clone(), left),
-                    const_stmt(right_ident.clone(), right),
-                    return_stmt(and(ident_expr(&left_ident), ident_expr(&right_ident))),
-                ],
-            })),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        })),
-        vec![],
-    )
+    ordered(left, right, and)
 }
 
+/// `left || right` that evaluates both operands.
 fn ordered_or(left: Expr, right: Expr) -> Expr {
+    ordered(left, right, or)
+}
+
+fn ordered(left: Expr, right: Expr, op: fn(Expr, Expr) -> Expr) -> Expr {
     let left_ident = private_ident!("_tsPatternLeftMatch");
     let right_ident = private_ident!("_tsPatternRightMatch");
-    call_expr(
-        paren_expr(Expr::Arrow(ArrowExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: vec![],
-            body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                span: DUMMY_SP,
-                ctxt: Default::default(),
-                stmts: vec![
-                    const_stmt(left_ident.clone(), left),
-                    const_stmt(right_ident.clone(), right),
-                    return_stmt(or(ident_expr(&left_ident), ident_expr(&right_ident))),
-                ],
-            })),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        })),
-        vec![],
-    )
+    iife(vec![
+        const_stmt(left_ident.clone(), left),
+        const_stmt(right_ident.clone(), right),
+        return_stmt(op(ident_expr(&left_ident), ident_expr(&right_ident))),
+    ])
 }
 
 fn iterable_every(iterable: Expr, left: Pat, test: Expr) -> Expr {
-    let body = Stmt::If(IfStmt {
-        span: DUMMY_SP,
-        test: Box::new(unary(UnaryOp::Bang, test)),
-        cons: Box::new(return_stmt(bool_lit(false))),
-        alt: None,
-    });
-    call_expr(
-        paren_expr(Expr::Arrow(ArrowExpr {
+    iife(vec![
+        Stmt::ForOf(ForOfStmt {
             span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: vec![],
-            body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
+            is_await: false,
+            left: ForHead::VarDecl(Box::new(VarDecl {
                 span: DUMMY_SP,
                 ctxt: Default::default(),
-                stmts: vec![
-                    Stmt::ForOf(ForOfStmt {
-                        span: DUMMY_SP,
-                        is_await: false,
-                        left: ForHead::VarDecl(Box::new(VarDecl {
-                            span: DUMMY_SP,
-                            ctxt: Default::default(),
-                            kind: VarDeclKind::Const,
-                            declare: false,
-                            decls: vec![VarDeclarator {
-                                span: DUMMY_SP,
-                                name: left,
-                                init: None,
-                                definite: false,
-                            }],
-                        })),
-                        right: Box::new(iterable),
-                        body: Box::new(Stmt::Block(BlockStmt {
-                            span: DUMMY_SP,
-                            ctxt: Default::default(),
-                            stmts: vec![body],
-                        })),
-                    }),
-                    return_stmt(bool_lit(true)),
-                ],
+                kind: VarDeclKind::Const,
+                declare: false,
+                decls: vec![VarDeclarator {
+                    span: DUMMY_SP,
+                    name: left,
+                    init: None,
+                    definite: false,
+                }],
             })),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        })),
+            right: Box::new(iterable),
+            body: Box::new(Stmt::Block(block_stmt(vec![if_stmt(
+                unary(UnaryOp::Bang, test),
+                return_stmt(bool_lit(false)),
+                None,
+            )]))),
+        }),
+        return_stmt(bool_lit(true)),
+    ])
+}
+
+fn iife(stmts: Vec<Stmt>) -> Expr {
+    call_expr(
+        paren_expr(arrow_expr(
+            vec![],
+            BlockStmtOrExpr::BlockStmt(block_stmt(stmts)),
+        )),
         vec![],
     )
 }
@@ -3176,136 +2903,90 @@ fn record_selection_match(
         key_selections,
         value_selections,
     );
-    let result = record_result_object(ident_expr(&matched), selection);
-    let invalid_result = record_result_object(
-        bool_lit(false),
-        record_selection_object(
-            selected_keys.clone(),
-            &value_arrays,
-            key_selections,
-            value_selections,
-        ),
-    );
+    let result = record_result_object(ident_expr(&matched), selection.clone());
+    let invalid_result = record_result_object(bool_lit(false), selection);
+    let push = |array: &Ident, item: &Ident| {
+        expr_stmt(call_expr(
+            member_expr(ident_expr(array), "push"),
+            vec![ident_expr(item)],
+        ))
+    };
     let coerced_key_match = coerced_key
         .as_ref()
         .map(|_| private_ident!("_tsPatternRecordCoercedKeyMatch"));
     let mut collect_selections = Vec::new();
     if let Some(coerced_key_match) = &coerced_key_match {
         if let Some((coerced_key_ident, _)) = &coerced_key {
-            collect_selections.push(Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(ident_expr(coerced_key_match)),
-                cons: Box::new(Stmt::Block(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    stmts: vec![expr_stmt(call_member(
-                        member_expr(ident_expr(&selected_keys), "push"),
-                        vec![ident_expr(coerced_key_ident)],
-                    ))],
-                })),
-                alt: None,
-            }));
+            collect_selections.push(if_stmt(
+                ident_expr(coerced_key_match),
+                Stmt::Block(block_stmt(vec![push(&selected_keys, coerced_key_ident)])),
+                None,
+            ));
         }
         if !key_selections.is_empty() {
-            collect_selections.push(Stmt::If(IfStmt {
-                span: DUMMY_SP,
-                test: Box::new(ident_expr(&key_match)),
-                cons: Box::new(Stmt::Block(BlockStmt {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    stmts: vec![expr_stmt(call_member(
-                        member_expr(ident_expr(&selected_keys), "push"),
-                        vec![ident_expr(&key_ident)],
-                    ))],
-                })),
-                alt: None,
-            }));
+            collect_selections.push(if_stmt(
+                ident_expr(&key_match),
+                Stmt::Block(block_stmt(vec![push(&selected_keys, &key_ident)])),
+                None,
+            ));
         }
     } else if !key_selections.is_empty() {
-        collect_selections.push(expr_stmt(call_member(
-            member_expr(ident_expr(&selected_keys), "push"),
-            vec![ident_expr(&key_ident)],
-        )));
+        collect_selections.push(push(&selected_keys, &key_ident));
     }
-    for (array, capture) in value_arrays.iter().zip(value_captures.iter()) {
-        collect_selections.push(expr_stmt(call_member(
-            member_expr(ident_expr(array), "push"),
-            vec![ident_expr(capture)],
-        )));
+    for (array, capture) in value_arrays.iter().zip(&value_captures) {
+        collect_selections.push(push(array, capture));
     }
     let mut entry_stmts = vec![const_stmt(
-        value_ident.clone(),
+        value_ident,
         computed_member_expr(ident_expr(&record_value), ident_expr(&key_ident)),
     )];
     if let (Some((coerced_key_ident, coerced_key_test)), Some(coerced_key_match)) =
-        (coerced_key, coerced_key_match.clone())
+        (coerced_key, &coerced_key_match)
     {
         entry_stmts.push(const_stmt(
-            coerced_key_ident.clone(),
+            coerced_key_ident,
             cond_expr(
                 typeof_eq(ident_expr(&key_ident), "string"),
                 call_expr(global_ident("Number", ctxt), vec![ident_expr(&key_ident)]),
                 null_lit(),
             ),
         ));
-        entry_stmts.push(const_stmt(coerced_key_match, coerced_key_test));
+        entry_stmts.push(const_stmt(coerced_key_match.clone(), coerced_key_test));
     }
     entry_stmts.push(const_stmt(key_match.clone(), key_test));
     entry_stmts.push(const_stmt(value_match.clone(), value_test));
-    let key_match_result = coerced_key_match
-        .map(|coerced_key_match| or(ident_expr(&coerced_key_match), ident_expr(&key_match)))
-        .unwrap_or_else(|| ident_expr(&key_match));
-    entry_stmts.push(Stmt::If(IfStmt {
-        span: DUMMY_SP,
-        test: Box::new(ident_expr(&value_match)),
-        cons: Box::new(Stmt::Block(BlockStmt {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            stmts: collect_selections,
-        })),
-        alt: None,
-    }));
-    entry_stmts.push(return_stmt(and(key_match_result, ident_expr(&value_match))));
-    let entry_body = BlockStmt {
-        span: DUMMY_SP,
-        ctxt: Default::default(),
-        stmts: entry_stmts,
+    let key_match_result = match coerced_key_match {
+        Some(coerced_key_match) => or(ident_expr(&coerced_key_match), ident_expr(&key_match)),
+        None => ident_expr(&key_match),
     };
-    let matcher = call_member(
+    entry_stmts.push(if_stmt(
+        ident_expr(&value_match),
+        Stmt::Block(block_stmt(collect_selections)),
+        None,
+    ));
+    entry_stmts.push(return_stmt(and(key_match_result, ident_expr(&value_match))));
+    let matcher = call_expr(
         member_expr(ident_expr(&keys), "every"),
-        vec![Expr::Arrow(ArrowExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: vec![Pat::Ident(key_ident.into())],
-            body: Box::new(BlockStmtOrExpr::BlockStmt(entry_body)),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        })],
+        vec![arrow_expr(
+            vec![Pat::Ident(key_ident.into())],
+            BlockStmtOrExpr::BlockStmt(block_stmt(entry_stmts)),
+        )],
     );
-    let mut setup_statements = vec![const_stmt(
-        selected_keys.clone(),
+    let empty_array = || {
         Expr::Array(ArrayLit {
             span: DUMMY_SP,
             elems: vec![],
-        }),
-    )];
-    for capture in &value_captures {
-        setup_statements.push(var_without_init(VarDeclKind::Let, capture.clone()));
-    }
-    for array in &value_arrays {
-        setup_statements.push(const_stmt(
-            array.clone(),
-            Expr::Array(ArrayLit {
-                span: DUMMY_SP,
-                elems: vec![],
-            }),
-        ));
-    }
-    setup_statements.push(Stmt::If(IfStmt {
-        span: DUMMY_SP,
-        test: Box::new(unary(
+        })
+    };
+    let mut setup_statements = vec![const_stmt(selected_keys, empty_array())];
+    setup_statements.extend(value_captures.into_iter().map(let_decl));
+    setup_statements.extend(
+        value_arrays
+            .into_iter()
+            .map(|array| const_stmt(array, empty_array())),
+    );
+    setup_statements.push(if_stmt(
+        unary(
             UnaryOp::Bang,
             paren_expr(and(
                 and(
@@ -3317,31 +2998,21 @@ fn record_selection_match(
                     array_is_array(ident_expr(&record_value), ctxt),
                 ),
             )),
-        )),
-        cons: Box::new(return_stmt(invalid_result)),
-        alt: None,
-    }));
+        ),
+        return_stmt(invalid_result),
+        None,
+    ));
     setup_statements.push(const_stmt(
         keys.clone(),
         reflect_own_keys(ident_expr(&record_value), ctxt),
     ));
-    setup_statements.push(const_stmt(matched.clone(), matcher));
+    setup_statements.push(const_stmt(matched, matcher));
     setup_statements.push(return_stmt(result));
     call_expr(
-        paren_expr(Expr::Arrow(ArrowExpr {
-            span: DUMMY_SP,
-            ctxt: Default::default(),
-            params: vec![Pat::Ident(record_value.clone().into())],
-            body: Box::new(BlockStmtOrExpr::BlockStmt(BlockStmt {
-                span: DUMMY_SP,
-                ctxt: Default::default(),
-                stmts: setup_statements,
-            })),
-            is_async: false,
-            is_generator: false,
-            type_params: None,
-            return_type: None,
-        })),
+        paren_expr(arrow_expr(
+            vec![Pat::Ident(record_value.into())],
+            BlockStmtOrExpr::BlockStmt(block_stmt(setup_statements)),
+        )),
         vec![value],
     )
 }
