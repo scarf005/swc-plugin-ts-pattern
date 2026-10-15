@@ -2898,7 +2898,7 @@ fn record_selection_match(
         value_arrays.push(array);
     }
     let selection = record_selection_object(
-        selected_keys.clone(),
+        &selected_keys,
         &value_arrays,
         key_selections,
         value_selections,
@@ -3017,45 +3017,32 @@ fn record_selection_match(
     )
 }
 
+/// Each key selection collects matched keys; each value selection collects
+/// its own array of values.
 fn record_selection_object(
-    selected_keys: Ident,
+    selected_keys: &Ident,
     selected_values: &[Ident],
     key_selections: &[SelectionBinding],
     value_selections: &[SelectionBinding],
 ) -> Expr {
-    let selections = key_selections.iter().chain(value_selections.iter());
-    if let Some(selection) = selections
-        .clone()
-        .find(|selection| selection.name.is_none())
-    {
-        return if key_selections
-            .iter()
-            .any(|candidate| std::ptr::eq(candidate, selection))
-        {
-            ident_expr(&selected_keys)
-        } else {
-            ident_expr(&selected_values[0])
+    let arrays = key_selections
+        .iter()
+        .map(|selection| (selection, selected_keys))
+        .chain(value_selections.iter().zip(selected_values));
+    let mut props = Vec::new();
+    for (selection, array) in arrays {
+        let Some(name) = &selection.name else {
+            // An anonymous selection is the only one.
+            return ident_expr(array);
         };
+        props.push(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+            key: PropName::Ident(IdentName::new(name.as_str().into(), DUMMY_SP)),
+            value: Box::new(ident_expr(array)),
+        }))));
     }
     Expr::Object(ObjectLit {
         span: DUMMY_SP,
-        props: selections
-            .filter_map(|selection| {
-                Some(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                    key: PropName::Ident(IdentName::new(selection.name.clone()?.into(), DUMMY_SP)),
-                    value: Box::new(
-                        if key_selections
-                            .iter()
-                            .any(|candidate| std::ptr::eq(candidate, selection))
-                        {
-                            ident_expr(&selected_keys)
-                        } else {
-                            ident_expr(&selected_values[0])
-                        },
-                    ),
-                }))))
-            })
-            .collect(),
+        props,
     })
 }
 
