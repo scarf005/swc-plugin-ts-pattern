@@ -879,3 +879,43 @@ test("isMatching compiles direct and curried checks", async () => {
   )
   assert.doesNotMatch(code, /isMatching\)?\(/, "isMatching calls must be compiled")
 })
+
+test("chained optional, and, or modifiers compile", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const classify = (input) =>
+      match(input)
+        .with({ stars: P.number.between(1, 5).optional(), tag: P.string.or(P.number) }, () => "rated")
+        .with({ name: P.string.startsWith("a").and(P.string.endsWith("z")) }, () => "az")
+        .otherwise(() => "other");
+    export const run = () => [
+      classify({ tag: "t" }),
+      classify({ stars: 3, tag: 1 }),
+      classify({ stars: 9, tag: 1 }),
+      classify({ stars: undefined, tag: true }),
+      classify({ name: "abcz" }),
+      classify({ name: "abc" }),
+    ];
+  `,
+    ["rated", "rated", "other", "other", "az", "other"],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("chained modifiers evaluate their base pattern values once", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let reads = 0;
+      const ctor = () => { reads++; return Date; };
+      const results = [new Date(0), 1].map((input) =>
+        match(input).with(P.instanceOf(ctor()).optional(), () => "date").otherwise(() => "other"));
+      return [results, reads];
+    };
+  `,
+    [["date", "other"], 2],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
