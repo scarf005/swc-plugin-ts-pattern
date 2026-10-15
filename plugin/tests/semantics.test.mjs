@@ -919,3 +919,40 @@ test("chained modifiers evaluate their base pattern values once", async () => {
   )
   assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
 })
+
+test("modifiers missing from a pattern keep the runtime error", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      try {
+        const input = [1];
+        const isOne = (value) => value === 1;
+        return [
+          match(input).with(P.array(P.number).and(P.array()), () => "both").otherwise(() => "other"),
+          match(1).with(P.when(isOne).or(2), () => "one").otherwise(() => "other"),
+        ];
+      } catch (error) {
+        return error.constructor.name;
+      }
+    };
+  `,
+    "TypeError",
+  )
+})
+
+test("const pattern aliases resolve through chained modifiers", async () => {
+  const code = await assertEquivalent(
+    `
+    import { isMatching, P } from "ts-pattern";
+    const post = { stars: P.number.between(1, 5).optional(), title: P.string };
+    export const run = () =>
+      [{ title: "a" }, { title: "a", stars: 3 }, { title: "a", stars: 7 }].map((input) => {
+        const response = { data: [input] };
+        return isMatching({ data: P.array(post) }, response) && isMatching(post, input);
+      });
+  `,
+    [true, true, false],
+  )
+  assert.doesNotMatch(code, /isMatching\)?\(\{/, "aliased chained patterns must compile")
+})

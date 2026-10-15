@@ -119,6 +119,9 @@ enum PApi<'a> {
     Call(&'a str, &'a CallExpr),
     /// `P.base.method(...)`
     Chain(&'a str, &'a str, &'a CallExpr),
+    /// `pattern.optional()`, `pattern.and(other)` or `pattern.or(other)` on a
+    /// chainable pattern
+    Modifier(&'a str, &'a Expr, &'a CallExpr),
 }
 
 #[derive(Clone, Default)]
@@ -313,7 +316,11 @@ impl TsPatternTransformer {
                 let Callee::Expr(callee) = &call.callee else {
                     return false;
                 };
-                self.is_static_pattern_member(callee)
+                // `P.name(...)`, or a method such as `.optional()` on one.
+                let pure_callee = self.is_static_pattern_member(callee)
+                    || matches!(&**callee, Expr::Member(member)
+                        if matches!(&*member.obj, Expr::Call(_)) && self.safe_const_pattern(&member.obj));
+                pure_callee
                     && call
                         .args
                         .iter()
@@ -486,11 +493,11 @@ impl TsPatternTransformer {
         let Expr::Member(member) = &**callee else {
             return None;
         };
-        Some(PApi::Chain(
-            self.p_member(&member.obj)?,
-            member_name(member)?,
-            call,
-        ))
+        let method = member_name(member)?;
+        if matches!(method, "optional" | "and" | "or") {
+            return Some(PApi::Modifier(method, &member.obj, call));
+        }
+        Some(PApi::Chain(self.p_member(&member.obj)?, method, call))
     }
 
     fn select_call<'a>(&'a self, expr: &'a Expr) -> Option<(&'a CallExpr, Option<&'a Expr>)> {
@@ -1078,10 +1085,46 @@ impl TsPatternTransformer {
                 Some(bin(BinaryOp::InstanceOf, value, single_arg(call)?.clone()))
             }
             PApi::Call("when", call) => Some(predicate_result(single_arg(call)?, value)),
+            PApi::Modifier(method, base, _) if !self.has_pattern_method(base, method) => None,
+            PApi::Modifier("optional", base, call) if call.args.is_empty() => {
+                self.optional_test(value, base, selections)
+            }
+            PApi::Modifier(method @ ("and" | "or"), base, call) => {
+                Some((if method == "and" { and } else { or })(
+                    self.unselected_test(value.clone(), base)?,
+                    self.unselected_test(value, single_arg(call)?)?,
+                ))
+            }
             PApi::Chain("string", method, call) => string_chain_test(value, method, call),
             PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
             _ => None,
         }
+    }
+
+    /// Whether ts-pattern attaches `method` to the pattern `base` evaluates to.
+    fn has_pattern_method(&self, base: &Expr, method: &str) -> bool {
+        const CHAINABLE: &[&str] = &["optional", "and", "or", "select"];
+        const ARRAY_CHAINABLE: &[&str] = &["optional", "select"];
+        let methods = match self.p_api(base) {
+            Some(PApi::Member(
+                "_" | "any" | "unknown" | "string" | "number" | "bigint" | "boolean" | "symbol"
+                | "nullish" | "nonNullable",
+            )) => CHAINABLE,
+            Some(PApi::Call(
+                "optional" | "set" | "map" | "record" | "intersection" | "union" | "not" | "select"
+                | "instanceOf" | "shape",
+                _,
+            )) => CHAINABLE,
+            Some(PApi::Call("array", _)) => ARRAY_CHAINABLE,
+            Some(PApi::Chain("string" | "number" | "bigint", _, _)) => CHAINABLE,
+            Some(PApi::Modifier("optional", base, _)) if self.has_pattern_method(base, "and") => {
+                CHAINABLE
+            }
+            Some(PApi::Modifier("optional", _, _)) => ARRAY_CHAINABLE,
+            Some(PApi::Modifier(..)) => CHAINABLE,
+            _ => &[],
+        };
+        methods.contains(&method)
     }
 
     /// Tests a nested pattern that must not contain selections.
@@ -1373,7 +1416,11 @@ impl TsPatternTransformer {
     }
 
     fn is_optional_pattern(&self, pattern: &Expr) -> bool {
-        matches!(self.p_api(pattern), Some(PApi::Call("optional", _)))
+        match self.p_api(pattern) {
+            Some(PApi::Call("optional", _)) => true,
+            Some(PApi::Modifier("optional", _, call)) => call.args.is_empty(),
+            _ => false,
+        }
     }
 
     fn array_test(
@@ -1585,6 +1632,8 @@ enum PatternCall {
     Select,
     /// Arguments are nested patterns.
     Nested,
+    /// `pattern.optional()`, `pattern.and(other)` or `pattern.or(other)`
+    Modifier,
     /// Arguments are plain values, e.g. `P.string.startsWith(prefix)`.
     Values,
     /// Unknown calls stay unprepared and fail lowering.
@@ -1606,6 +1655,7 @@ impl TsPatternTransformer {
                 _,
             )) => PatternCall::Nested,
             Some(PApi::Call("instanceOf", _) | PApi::Chain(..)) => PatternCall::Values,
+            Some(PApi::Modifier(..)) => PatternCall::Modifier,
             _ => PatternCall::Opaque,
         }
     }
@@ -1633,13 +1683,19 @@ fn pattern_needs_preparation(transformer: &TsPatternTransformer, expr: &Expr) ->
             PatternCall::When => call.args.first().is_none_or(|arg| {
                 !is_function_expr(&arg.expr) || guard_requires_snapshot(&arg.expr)
             }),
-            PatternCall::Select => match call.args.as_slice() {
-                [] => false,
-                [arg] if selection_name(&arg.expr).is_some() => false,
-                [pattern] | [_, pattern] => needs(&pattern.expr),
-                _ => true,
-            },
+            PatternCall::Select => {
+                method_base(call).is_some_and(needs)
+                    || match call.args.as_slice() {
+                        [] => false,
+                        [arg] if selection_name(&arg.expr).is_some() => false,
+                        [pattern] | [_, pattern] => needs(&pattern.expr),
+                        _ => true,
+                    }
+            }
             PatternCall::Nested => call.args.iter().any(|arg| needs(&arg.expr)),
+            PatternCall::Modifier => {
+                method_base(call).is_some_and(needs) || call.args.iter().any(|arg| needs(&arg.expr))
+            }
             PatternCall::Values => call
                 .args
                 .iter()
@@ -1647,6 +1703,27 @@ fn pattern_needs_preparation(transformer: &TsPatternTransformer, expr: &Expr) ->
             PatternCall::Opaque => true,
         },
         _ => false,
+    }
+}
+
+/// The object a method call is made on, e.g. `base` in `base.select()`.
+fn method_base(call: &CallExpr) -> Option<&Expr> {
+    match &call.callee {
+        Callee::Expr(callee) => match &**callee {
+            Expr::Member(member) => Some(&member.obj),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn method_base_mut(call: &mut CallExpr) -> Option<&mut Expr> {
+    match &mut call.callee {
+        Callee::Expr(callee) => match &mut **callee {
+            Expr::Member(member) => Some(&mut member.obj),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1700,13 +1777,26 @@ fn prepare_pattern_expr(
                     capture_prepared_value(&mut arg.expr, params, args);
                 }
             }
-            PatternCall::Select => match call.args.as_mut_slice() {
-                [arg] if selection_name(&arg.expr).is_some() => {}
-                [pattern] | [_, pattern] => {
-                    prepare_pattern_expr(transformer, &mut pattern.expr, params, args)
+            PatternCall::Select => {
+                if let Some(base) = method_base_mut(call) {
+                    prepare_pattern_expr(transformer, base, params, args);
                 }
-                _ => {}
-            },
+                match call.args.as_mut_slice() {
+                    [arg] if selection_name(&arg.expr).is_some() => {}
+                    [pattern] | [_, pattern] => {
+                        prepare_pattern_expr(transformer, &mut pattern.expr, params, args)
+                    }
+                    _ => {}
+                }
+            }
+            PatternCall::Modifier => {
+                if let Some(base) = method_base_mut(call) {
+                    prepare_pattern_expr(transformer, base, params, args);
+                }
+                for arg in &mut call.args {
+                    prepare_pattern_expr(transformer, &mut arg.expr, params, args);
+                }
+            }
             PatternCall::Nested => {
                 for arg in &mut call.args {
                     prepare_pattern_expr(transformer, &mut arg.expr, params, args);
