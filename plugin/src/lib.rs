@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+};
 
 use swc_core::{
     common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
@@ -32,6 +35,9 @@ struct TsPatternTransformer {
     mutated_bindings: HashSet<Id>,
     non_exhaustive_error: Option<Expr>,
     needs_non_exhaustive_error_import: bool,
+    /// Temporaries that the current arm's tests assign; `arm_parts` declares
+    /// them.
+    pending_temps: RefCell<Vec<Ident>>,
 }
 
 struct MatchChain {
@@ -861,31 +867,27 @@ impl TsPatternTransformer {
         guard_input: Expr,
         arm: &MatchArm,
     ) -> Option<(Expr, Expr, Vec<Ident>)> {
+        // Drop temporaries left by an attempt that failed to lower.
+        self.pending_temps.take();
         let mut selections = Vec::new();
         let pattern_test = if arm.patterns.len() == 1
             && matches!(*arm.patterns[0], Expr::Invalid(_))
         {
             bool_lit(true)
         } else {
-            arm.patterns
-                .iter()
-                .map(|pattern| {
+            join_tests(
+                arm.patterns.iter().map(|pattern| {
                     self.pattern_test_with_selections(match_input.clone(), pattern, &mut selections)
-                })
-                .try_fold(None, |acc, test| {
-                    let test = test?;
-                    Some(Some(match acc {
-                        Some(acc) => or(acc, test),
-                        None => test,
-                    }))
-                })??
+                }),
+                or,
+            )?
         };
 
         let mut test = match &arm.guard {
             Some(guard) => and(pattern_test, predicate_result(guard, guard_input)),
             None => pattern_test,
         };
-        let mut captures = Vec::with_capacity(selections.len());
+        let mut captures = self.pending_temps.take();
         let mut grouped_captures: Vec<(Id, Ident)> = Vec::new();
         let mut handler_selections = Vec::with_capacity(selections.len());
         for selection in selections {
@@ -904,13 +906,9 @@ impl TsPatternTransformer {
                 capture
             } else {
                 let capture = private_ident!("_tsPatternSelected");
-                let mut replacer = SelectionCapture {
-                    target: selection.value.clone(),
-                    capture: capture.clone(),
-                    replaced: false,
-                };
+                let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
                 test.visit_mut_with(&mut replacer);
-                if !replacer.replaced {
+                if !replacer.found {
                     test = seq_expr(assign_expr(capture.clone(), selection.value), test);
                 }
                 if let Some(group) = selection.capture_group.clone() {
@@ -1140,6 +1138,15 @@ impl TsPatternTransformer {
         }
     }
 
+    /// Lowers a test that runs inside a callback, returning the temporaries
+    /// it assigns so the callback declares them locally.
+    fn with_local_temps<T>(&self, lower: impl FnOnce() -> Option<T>) -> Option<(T, Vec<Ident>)> {
+        let outer = self.pending_temps.take();
+        let lowered = lower();
+        let local = self.pending_temps.replace(outer);
+        Some((lowered?, local))
+    }
+
     /// Tests a nested pattern that must not contain selections.
     fn unselected_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
         let mut selections = Vec::new();
@@ -1178,15 +1185,21 @@ impl TsPatternTransformer {
             [] => Some(array_test),
             [item] => {
                 let item_ident = private_ident!("_tsPatternItem");
-                let item_test = self.unselected_test(ident_expr(&item_ident), &item.expr)?;
+                let (item_test, temps) = self.with_local_temps(|| {
+                    self.unselected_test(ident_expr(&item_ident), &item.expr)
+                })?;
+                let body = if temps.is_empty() {
+                    BlockStmtOrExpr::Expr(Box::new(item_test))
+                } else {
+                    let mut stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
+                    stmts.push(return_stmt(item_test));
+                    BlockStmtOrExpr::BlockStmt(block_stmt(stmts))
+                };
                 Some(and(
                     array_test,
                     call_expr(
                         member_expr(value, "every"),
-                        vec![arrow_expr(
-                            vec![Pat::Ident(item_ident.into())],
-                            BlockStmtOrExpr::Expr(Box::new(item_test)),
-                        )],
+                        vec![arrow_expr(vec![Pat::Ident(item_ident.into())], body)],
                     ),
                 ))
             }
@@ -1200,10 +1213,12 @@ impl TsPatternTransformer {
             [] => Some(set_test),
             [item] => {
                 let item_ident = private_ident!("_tsPatternItem");
-                let item_test = self.unselected_test(ident_expr(&item_ident), &item.expr)?;
+                let (item_test, temps) = self.with_local_temps(|| {
+                    self.unselected_test(ident_expr(&item_ident), &item.expr)
+                })?;
                 Some(and(
                     set_test,
-                    iterable_every(value, Pat::Ident(item_ident.into()), item_test),
+                    iterable_every(value, Pat::Ident(item_ident.into()), item_test, temps),
                 ))
             }
             _ => None,
@@ -1217,8 +1232,11 @@ impl TsPatternTransformer {
         };
         let key_ident = private_ident!("_tsPatternKey");
         let value_ident = private_ident!("_tsPatternValue");
-        let key_test = self.unselected_test(ident_expr(&key_ident), &key.expr)?;
-        let value_test = self.unselected_test(ident_expr(&value_ident), &entry.expr)?;
+        let (test, temps) = self.with_local_temps(|| {
+            let key_test = self.unselected_test(ident_expr(&key_ident), &key.expr)?;
+            let value_test = self.unselected_test(ident_expr(&value_ident), &entry.expr)?;
+            Some(ordered_and(key_test, value_test))
+        })?;
         Some(and(
             map_test,
             iterable_every(
@@ -1232,7 +1250,8 @@ impl TsPatternTransformer {
                     optional: false,
                     type_ann: None,
                 }),
-                ordered_and(key_test, value_test),
+                test,
+                temps,
             ),
         ))
     }
@@ -1268,43 +1287,58 @@ impl TsPatternTransformer {
                 ),
             )
         };
-        let mut key_selections = Vec::new();
-        let mut coerced_key = None;
-        let key_test = match key_pattern {
-            None => typeof_eq(ident_expr(&key_ident), "string"),
-            Some(key_pattern) => {
-                let direct_key_test = self.pattern_test_with_selections(
-                    ident_expr(&key_ident),
-                    key_pattern,
-                    &mut key_selections,
+        let ((key_test, coerced_key, key_selections, value_test, value_selections), temps) =
+            self.with_local_temps(|| {
+                let mut key_selections = Vec::new();
+                let mut coerced_key = None;
+                let key_test = match key_pattern {
+                    None => typeof_eq(ident_expr(&key_ident), "string"),
+                    Some(key_pattern) => {
+                        let direct_key_test = self.pattern_test_with_selections(
+                            ident_expr(&key_ident),
+                            key_pattern,
+                            &mut key_selections,
+                        )?;
+                        if self.rejects_numbers(key_pattern) {
+                            // The numeric form of a key can never match.
+                            direct_key_test
+                        } else if key_selections.is_empty() {
+                            let coerced = call_expr(
+                                global_ident("Number", ctxt),
+                                vec![ident_expr(&key_ident)],
+                            );
+                            ordered_or(
+                                numeric_key_test(
+                                    coerced.clone(),
+                                    self.pattern_test(coerced, key_pattern)?,
+                                ),
+                                direct_key_test,
+                            )
+                        } else {
+                            let coerced_ident = private_ident!("_tsPatternCoercedKey");
+                            let test = numeric_key_test(
+                                ident_expr(&coerced_ident),
+                                self.pattern_test(ident_expr(&coerced_ident), key_pattern)?,
+                            );
+                            coerced_key = Some((coerced_ident, test));
+                            direct_key_test
+                        }
+                    }
+                };
+                let mut value_selections = Vec::new();
+                let value_test = self.pattern_test_with_selections(
+                    ident_expr(&value_ident),
+                    value_pattern,
+                    &mut value_selections,
                 )?;
-                if self.rejects_numbers(key_pattern) {
-                    // The numeric form of a key can never match.
-                    direct_key_test
-                } else if key_selections.is_empty() {
-                    let coerced =
-                        call_expr(global_ident("Number", ctxt), vec![ident_expr(&key_ident)]);
-                    ordered_or(
-                        numeric_key_test(coerced.clone(), self.pattern_test(coerced, key_pattern)?),
-                        direct_key_test,
-                    )
-                } else {
-                    let coerced_ident = private_ident!("_tsPatternCoercedKey");
-                    let test = numeric_key_test(
-                        ident_expr(&coerced_ident),
-                        self.pattern_test(ident_expr(&coerced_ident), key_pattern)?,
-                    );
-                    coerced_key = Some((coerced_ident, test));
-                    direct_key_test
-                }
-            }
-        };
-        let mut value_selections = Vec::new();
-        let value_test = self.pattern_test_with_selections(
-            ident_expr(&value_ident),
-            value_pattern,
-            &mut value_selections,
-        )?;
+                Some((
+                    key_test,
+                    coerced_key,
+                    key_selections,
+                    value_test,
+                    value_selections,
+                ))
+            })?;
         let all_selections = key_selections
             .iter()
             .chain(value_selections.iter())
@@ -1333,18 +1367,24 @@ impl TsPatternTransformer {
                     member_expr(reflect_own_keys(value.clone(), ctxt), "every"),
                     vec![arrow_expr(
                         vec![Pat::Ident(key_ident.clone().into())],
-                        BlockStmtOrExpr::BlockStmt(block_stmt(vec![
-                            const_stmt(
-                                value_ident,
-                                computed_member_expr(value, ident_expr(&key_ident)),
-                            ),
-                            const_stmt(key_match_ident.clone(), key_test),
-                            const_stmt(value_match_ident.clone(), value_test),
-                            return_stmt(ordered_and(
-                                ident_expr(&key_match_ident),
-                                ident_expr(&value_match_ident),
-                            )),
-                        ])),
+                        BlockStmtOrExpr::BlockStmt(block_stmt(
+                            temps
+                                .into_iter()
+                                .map(let_decl)
+                                .chain([
+                                    const_stmt(
+                                        value_ident,
+                                        computed_member_expr(value, ident_expr(&key_ident)),
+                                    ),
+                                    const_stmt(key_match_ident.clone(), key_test),
+                                    const_stmt(value_match_ident.clone(), value_test),
+                                    return_stmt(ordered_and(
+                                        ident_expr(&key_match_ident),
+                                        ident_expr(&value_match_ident),
+                                    )),
+                                ])
+                                .collect(),
+                        )),
                     )],
                 ),
             ));
@@ -1362,6 +1402,7 @@ impl TsPatternTransformer {
             key_test,
             coerced_key,
             value_test,
+            temps,
             key_selections: &key_selections,
             value_selections: &value_selections,
         });
@@ -1412,11 +1453,18 @@ impl TsPatternTransformer {
             };
 
             let prop_access = prop_access(value.clone(), &key_value.key)?;
+            let first_selection = selections.len();
             let test = self.pattern_test_with_selections(
                 prop_access.clone(),
                 &key_value.value,
                 selections,
             )?;
+            let test = self.read_once(
+                &prop_access,
+                &key_value.key,
+                test,
+                &mut selections[first_selection..],
+            );
             let test = if self.is_optional_pattern(&key_value.value) {
                 test
             } else {
@@ -1429,6 +1477,34 @@ impl TsPatternTransformer {
             };
             Some(and(acc, test))
         })
+    }
+
+    /// Makes `test` and the selections it added read `access` once, as
+    /// ts-pattern reads each property once per arm.
+    fn read_once(
+        &self,
+        access: &Expr,
+        key: &PropName,
+        mut test: Expr,
+        selections: &mut [SelectionBinding],
+    ) -> Expr {
+        let mut reads = CountReads {
+            target: access,
+            count: 0,
+        };
+        test.visit_with(&mut reads);
+        if reads.count < 2 {
+            return test;
+        }
+        let temp = private_ident_for_prop("_tsPattern", key);
+        test.visit_mut_with(&mut ReadOnce::new(access.clone(), temp.clone(), true));
+        for selection in selections {
+            selection
+                .value
+                .visit_mut_with(&mut ReadOnce::new(access.clone(), temp.clone(), false));
+        }
+        self.pending_temps.borrow_mut().push(temp);
+        test
     }
 
     fn is_optional_pattern(&self, pattern: &Expr) -> bool {
@@ -1468,15 +1544,16 @@ impl TsPatternTransformer {
                     return None;
                 }
 
-                let item = computed_member_expr(
-                    value.clone(),
-                    Expr::Lit(Lit::Num(Number {
-                        span: DUMMY_SP,
-                        value: index as f64,
-                        raw: None,
-                    })),
-                );
-                let test = self.pattern_test_with_selections(item, &elem.expr, selections)?;
+                let index = PropName::Num(Number {
+                    span: DUMMY_SP,
+                    value: index as f64,
+                    raw: None,
+                });
+                let item = prop_access(value.clone(), &index)?;
+                let first_selection = selections.len();
+                let test =
+                    self.pattern_test_with_selections(item.clone(), &elem.expr, selections)?;
+                let test = self.read_once(&item, &index, test, &mut selections[first_selection..]);
                 Some(and(acc, test))
             })
     }
@@ -1974,20 +2051,53 @@ fn selection_handler_input(input: Expr, selections: Vec<SelectionBinding>) -> Op
     Some(named_selection_object(selections))
 }
 
-struct SelectionCapture {
+/// Replaces every read of `target` with `temp`; with `assign`, the first
+/// read, which is also evaluated first, becomes `(temp = target)`.
+struct ReadOnce {
     target: Expr,
-    capture: Ident,
-    replaced: bool,
+    temp: Ident,
+    assign: bool,
+    found: bool,
 }
 
-impl VisitMut for SelectionCapture {
+impl ReadOnce {
+    fn new(target: Expr, temp: Ident, assign: bool) -> Self {
+        Self {
+            target,
+            temp,
+            assign,
+            found: false,
+        }
+    }
+}
+
+impl VisitMut for ReadOnce {
     fn visit_mut_expr(&mut self, expr: &mut Expr) {
-        if !self.replaced && expr.eq_ignore_span(&self.target) {
-            *expr = assign_expr(self.capture.clone(), self.target.clone());
-            self.replaced = true;
+        if expr.eq_ignore_span(&self.target) {
+            *expr = if self.assign && !self.found {
+                assign_expr(self.temp.clone(), self.target.clone())
+            } else {
+                ident_expr(&self.temp)
+            };
+            self.found = true;
             return;
         }
         expr.visit_mut_children_with(self);
+    }
+}
+
+struct CountReads<'a> {
+    target: &'a Expr,
+    count: usize,
+}
+
+impl Visit for CountReads<'_> {
+    fn visit_expr(&mut self, expr: &Expr) {
+        if expr.eq_ignore_span(self.target) {
+            self.count += 1;
+            return;
+        }
+        expr.visit_children_with(self);
     }
 }
 
@@ -2959,8 +3069,9 @@ fn is_unobservable(expr: &Expr) -> bool {
     }
 }
 
-fn iterable_every(iterable: Expr, left: Pat, test: Expr) -> Expr {
-    iife(vec![
+fn iterable_every(iterable: Expr, left: Pat, test: Expr, temps: Vec<Ident>) -> Expr {
+    let mut stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
+    stmts.extend([
         Stmt::ForOf(ForOfStmt {
             span: DUMMY_SP,
             is_await: false,
@@ -2984,7 +3095,8 @@ fn iterable_every(iterable: Expr, left: Pat, test: Expr) -> Expr {
             )]))),
         }),
         return_stmt(bool_lit(true)),
-    ])
+    ]);
+    iife(stmts)
 }
 
 fn iife(stmts: Vec<Stmt>) -> Expr {
@@ -3106,6 +3218,8 @@ struct RecordSelectionMatch<'a> {
     /// The numeric form of a selecting key pattern and its test.
     coerced_key: Option<(Ident, Expr)>,
     value_test: Expr,
+    /// Temporaries the key and value tests assign.
+    temps: Vec<Ident>,
     key_selections: &'a [SelectionBinding],
     value_selections: &'a [SelectionBinding],
 }
@@ -3119,6 +3233,7 @@ fn record_selection_match(
         key_test,
         coerced_key,
         value_test,
+        temps,
         key_selections,
         value_selections,
     }: RecordSelectionMatch,
@@ -3135,13 +3250,9 @@ fn record_selection_match(
     for selection in value_selections {
         let capture = private_ident!("_tsPatternRecordSelectedValue");
         let array = private_ident!("_tsPatternRecordSelectedValues");
-        let mut replacer = SelectionCapture {
-            target: selection.value.clone(),
-            capture: capture.clone(),
-            replaced: false,
-        };
+        let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
         value_test.visit_mut_with(&mut replacer);
-        if !replacer.replaced {
+        if !replacer.found {
             value_test = seq_expr(
                 assign_expr(capture.clone(), selection.value.clone()),
                 value_test,
@@ -3189,10 +3300,11 @@ fn record_selection_match(
     for (array, capture) in value_arrays.iter().zip(&value_captures) {
         collect_selections.push(push(array, capture));
     }
-    let mut entry_stmts = vec![const_stmt(
+    let mut entry_stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
+    entry_stmts.push(const_stmt(
         value_ident,
         computed_member_expr(ident_expr(&record_value), ident_expr(&key_ident)),
-    )];
+    ));
     if let (Some((coerced_key_ident, coerced_key_test)), Some(coerced_key_match)) =
         (coerced_key, &coerced_key_match)
     {
@@ -3690,8 +3802,14 @@ const result = match(input).with({ type: "ok", data: { type: "img", src: P.selec
         );
 
         assert!(!output.contains("match(input).with"), "{output}");
-        assert!(output.contains("input.data.src"), "{output}");
-        assert!(output.contains("_tsPatternSelected"), "{output}");
+        assert!(
+            output.contains("(_tsPatternData = input.data) !== null"),
+            "{output}"
+        );
+        assert!(
+            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
+            "{output}"
+        );
     }
 
     #[test]
@@ -3715,7 +3833,7 @@ const result = match(input).with(pattern, (value) => value[0]).with(P.number.gt(
 
         assert!(output.contains("input[0] === \"a\""), "{output}");
         assert!(
-            output.contains("input[1] === \"a\" || input[1] === \"b\""),
+            output.contains("(_tsPatternValue = input[1]) === \"a\" || _tsPatternValue === \"b\""),
             "{output}"
         );
         assert!(
