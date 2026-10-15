@@ -626,32 +626,12 @@ impl TsPatternTransformer {
         let mut stmts = Vec::new();
 
         for (arm_index, arm) in arms.into_iter().enumerate() {
-            let (test, handler_input, captures) =
-                if arm_uses_shared_selection(self, match_input_expr.clone(), &arm)? {
-                    self.ternary_arm_parts(
-                        match_input_expr.clone(),
-                        handler_input_expr.clone(),
-                        &arm,
-                        arm_index,
-                    )?
-                } else {
-                    (
-                        arm_test(
-                            self,
-                            match_input_expr.clone(),
-                            handler_input_expr.clone(),
-                            &arm,
-                            known_match_object,
-                        )?,
-                        arm_handler_input(
-                            self,
-                            match_input_expr.clone(),
-                            handler_input_expr.clone(),
-                            &arm,
-                        )?,
-                        Vec::new(),
-                    )
-                };
+            let (test, handler_input, captures) = self.ternary_arm_parts(
+                match_input_expr.clone(),
+                handler_input_expr.clone(),
+                &arm,
+                arm_index,
+            )?;
             for capture in captures {
                 stmts.push(var_without_init(VarDeclKind::Let, capture));
             }
@@ -832,32 +812,12 @@ impl TsPatternTransformer {
         let mut declarations = Vec::new();
 
         for (arm_index, arm) in arms.into_iter().enumerate().rev() {
-            let (test, handler_input, captures) =
-                if arm_uses_shared_selection(self, match_input_expr.clone(), &arm)? {
-                    self.ternary_arm_parts(
-                        match_input_expr.clone(),
-                        handler_input_expr.clone(),
-                        &arm,
-                        arm_index,
-                    )?
-                } else {
-                    (
-                        arm_test(
-                            self,
-                            match_input_expr.clone(),
-                            handler_input_expr.clone(),
-                            &arm,
-                            known_match_object,
-                        )?,
-                        arm_handler_input(
-                            self,
-                            match_input_expr.clone(),
-                            handler_input_expr.clone(),
-                            &arm,
-                        )?,
-                        Vec::new(),
-                    )
-                };
+            let (test, handler_input, captures) = self.ternary_arm_parts(
+                match_input_expr.clone(),
+                handler_input_expr.clone(),
+                &arm,
+                arm_index,
+            )?;
             declarations.extend(
                 captures
                     .into_iter()
@@ -2439,95 +2399,6 @@ fn parse_when_arm(call: &CallExpr) -> Option<MatchArm> {
     })
 }
 
-fn arm_uses_shared_selection(
-    transformer: &TsPatternTransformer,
-    match_input: Expr,
-    arm: &MatchArm,
-) -> Option<bool> {
-    let mut selections = Vec::new();
-    for pattern in &arm.patterns {
-        transformer.pattern_test_with_selections(match_input.clone(), pattern, &mut selections)?;
-    }
-    Some(
-        selections
-            .iter()
-            .any(|selection| selection.capture_group.is_some()),
-    )
-}
-
-fn arm_test(
-    transformer: &TsPatternTransformer,
-    match_input: Expr,
-    guard_input: Expr,
-    arm: &MatchArm,
-    known_match_object: bool,
-) -> Option<Expr> {
-    let pattern_test = if arm.patterns.len() == 1 && matches!(*arm.patterns[0], Expr::Invalid(_)) {
-        bool_lit(true)
-    } else {
-        arm.patterns
-            .iter()
-            .map(|pattern| {
-                if known_match_object {
-                    transformer.pattern_test_with_selections(
-                        match_input.clone(),
-                        pattern,
-                        &mut Vec::new(),
-                    )
-                } else {
-                    transformer.pattern_test(match_input.clone(), pattern)
-                }
-            })
-            .try_fold(None, |acc, test| {
-                let test = test?;
-                Some(Some(match acc {
-                    Some(acc) => or(acc, test),
-                    None => test,
-                }))
-            })??
-    };
-
-    match &arm.guard {
-        Some(guard) => Some(and(pattern_test, guard_result(guard, guard_input))),
-        None => Some(pattern_test),
-    }
-}
-
-fn arm_handler_input(
-    transformer: &TsPatternTransformer,
-    match_input_expr: Expr,
-    handler_input_expr: Expr,
-    arm: &MatchArm,
-) -> Option<Expr> {
-    let mut selections = Vec::new();
-    for pattern in &arm.patterns {
-        transformer.pattern_test_with_selections(
-            match_input_expr.clone(),
-            pattern,
-            &mut selections,
-        )?;
-    }
-    if selections.is_empty() {
-        return Some(handler_input_expr);
-    }
-    if arm.patterns.len() != 1 {
-        return None;
-    }
-    let anonymous_count = selections
-        .iter()
-        .filter(|selection| selection.name.is_none())
-        .count();
-    if anonymous_count > 1 || (anonymous_count == 1 && selections.len() > 1) {
-        return None;
-    }
-    if anonymous_count == 1 {
-        return selections
-            .into_iter()
-            .find_map(|selection| selection.name.is_none().then_some(selection.value));
-    }
-    Some(named_selection_object(selections))
-}
-
 fn selection_needs_capture(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -4010,7 +3881,11 @@ export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img
             "{output}"
         );
         assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
-        assert!(output.contains("return _tsPatternData.src"), "{output}");
+        assert!(
+            output.contains("(_tsPatternSelected0 = _tsPatternData.src)"),
+            "{output}"
+        );
+        assert!(output.contains("return _tsPatternSelected0"), "{output}");
         assert!(!output.contains("match(result).with"), "{output}");
     }
 
@@ -4057,7 +3932,7 @@ export const render = (result: { type: "error" } | { type: "ok"; data: { type: "
             "{output}"
         );
         assert!(
-            output.contains("_tsPatternResult = _tsPatternData.src"),
+            output.contains("(_tsPatternSelected0 = _tsPatternData.src)"),
             "{output}"
         );
         assert!(!output.contains("result !== null && typeof result === \"object\" && \"data\" in result && result.data !== null"), "{output}");
