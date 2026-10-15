@@ -698,9 +698,9 @@ impl TsPatternTransformer {
 
         let mut stmts = Vec::new();
         let mut branches = Vec::with_capacity(arms.len());
-        for (arm_index, arm) in arms.into_iter().enumerate() {
+        for arm in arms {
             let (test, handler_input, captures) =
-                self.arm_parts(inputs.test.clone(), inputs.handler.clone(), &arm, arm_index)?;
+                self.arm_parts(inputs.test.clone(), inputs.handler.clone(), &arm)?;
             stmts.extend(captures.into_iter().map(let_decl));
             let result = handler_result(arm.handler, vec![handler_input, inputs.handler.clone()]);
             branches.push((test, sink.deliver(result)));
@@ -828,9 +828,9 @@ impl TsPatternTransformer {
         };
         let mut expression = handler_result(fallback, vec![input.clone()]);
 
-        for (arm_index, arm) in chain.arms.into_iter().enumerate().rev() {
+        for arm in chain.arms.into_iter().rev() {
             let (test, handler_input, captures) =
-                self.arm_parts(input.clone(), input.clone(), &arm, arm_index)?;
+                self.arm_parts(input.clone(), input.clone(), &arm)?;
             let branch = cond_expr(
                 test,
                 handler_result(arm.handler, vec![handler_input, input.clone()]),
@@ -860,7 +860,6 @@ impl TsPatternTransformer {
         match_input: Expr,
         guard_input: Expr,
         arm: &MatchArm,
-        arm_index: usize,
     ) -> Option<(Expr, Expr, Vec<Ident>)> {
         let mut selections = Vec::new();
         let pattern_test = if arm.patterns.len() == 1
@@ -889,7 +888,7 @@ impl TsPatternTransformer {
         let mut captures = Vec::with_capacity(selections.len());
         let mut grouped_captures: Vec<(Id, Ident)> = Vec::new();
         let mut handler_selections = Vec::with_capacity(selections.len());
-        for (selection_index, selection) in selections.into_iter().enumerate() {
+        for selection in selections {
             if !selection_needs_capture(&selection.value) {
                 handler_selections.push(selection);
                 continue;
@@ -904,10 +903,7 @@ impl TsPatternTransformer {
             let capture = if let Some(capture) = existing_capture {
                 capture
             } else {
-                let capture = private_ident_for_index(
-                    "_tsPatternSelected",
-                    arm_index.saturating_mul(16) + selection_index,
-                );
+                let capture = private_ident!("_tsPatternSelected");
                 let mut replacer = SelectionCapture {
                     target: selection.value.clone(),
                     capture: capture.clone(),
@@ -2325,10 +2321,6 @@ fn single_object_prop_with_object_value(pattern: &Expr) -> Option<(PropName, &Ex
         .then_some((key_value.key.clone(), &key_value.value))
 }
 
-fn private_ident_for_index(prefix: &str, index: usize) -> Ident {
-    private_ident!(DUMMY_SP, format!("{prefix}{index}"))
-}
-
 fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
     let name = match prop {
         PropName::Ident(ident) => ident.sym.to_string(),
@@ -3140,9 +3132,9 @@ fn record_selection_match(
     let mut value_test = value_test;
     let mut value_captures = Vec::new();
     let mut value_arrays = Vec::new();
-    for (index, selection) in value_selections.iter().enumerate() {
-        let capture = private_ident_for_index("_tsPatternRecordSelectedValue", index);
-        let array = private_ident_for_index("_tsPatternRecordSelectedValues", index);
+    for selection in value_selections {
+        let capture = private_ident!("_tsPatternRecordSelectedValue");
+        let array = private_ident!("_tsPatternRecordSelectedValues");
         let mut replacer = SelectionCapture {
             target: selection.value.clone(),
             capture: capture.clone(),
@@ -3451,10 +3443,10 @@ export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img
         );
         assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
         assert!(
-            output.contains("(_tsPatternSelected0 = _tsPatternData.src)"),
+            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
             "{output}"
         );
-        assert!(output.contains("return _tsPatternSelected0"), "{output}");
+        assert!(output.contains("return _tsPatternSelected"), "{output}");
         assert!(!output.contains("match(result).with"), "{output}");
     }
 
@@ -3501,7 +3493,7 @@ export const render = (result: { type: "error" } | { type: "ok"; data: { type: "
             "{output}"
         );
         assert!(
-            output.contains("(_tsPatternSelected0 = _tsPatternData.src)"),
+            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
             "{output}"
         );
         assert!(!output.contains("result !== null && typeof result === \"object\" && \"data\" in result && result.data !== null"), "{output}");
