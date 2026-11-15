@@ -690,6 +690,9 @@ impl TsPatternTransformer {
         };
         let method = member_name(member)?;
         if matches!(method, "optional" | "and" | "or") {
+            if !self.has_chain_method(&member.obj, method) {
+                return None;
+            }
             return Some(PApi::Modifier(method, &member.obj, call));
         }
         Some(PApi::Chain(self.p_member(&member.obj)?, method, call))
@@ -709,7 +712,20 @@ impl TsPatternTransformer {
         if self.p_member(callee).is_some() {
             return Some((call, None));
         }
+        if !self.has_chain_method(&member.obj, "select") {
+            return None;
+        }
         Some((call, Some(&member.obj)))
+    }
+
+    /// Whether the runtime value of `base` has `method`: `P.when(f)` has no
+    /// chain methods and `P.array(x)` has no `and` or `or`.
+    fn has_chain_method(&self, base: &Expr, method: &str) -> bool {
+        match self.p_api(base) {
+            Some(PApi::Call("when", _)) => false,
+            Some(PApi::Call("array", _)) => matches!(method, "optional" | "select"),
+            _ => true,
+        }
     }
 
     fn is_namespace_member(&self, member: &MemberExpr, name: &str) -> bool {
