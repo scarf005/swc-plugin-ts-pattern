@@ -18,7 +18,7 @@ The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserv
 From npm:
 
 ```sh
-npm install @scarf005/swc-plugin-ts-pattern
+npm install @scarf005/swc-plugin-ts-pattern @swc/core@~1.15.0 ts-pattern
 ```
 
 Or from JSR:
@@ -29,7 +29,13 @@ npx jsr add @scarf005/swc-plugin-ts-pattern
 
 ## Configure SWC
 
-Use `@swc/core@1.15.33`, the runtime matched to this plugin's WASM ABI. Resolve the WASM explicitly rather than using the package root: the JSR/npm bridge root exports the transform API, while native npm archives use a WASM root.
+Supported versions:
+
+- `@swc/core` 1.15.x (checked 1.15.0 to 1.15.47). Versions 1.14 and earlier and 1.16 cannot load the plugin.
+- `ts-pattern` 5.0 to 5.9.
+- Node.js 22.15 or later, and Deno 2.9.7 or later.
+
+Resolve the WASM explicitly rather than using the package root: the JSR/npm bridge root exports the transform API, while native npm archives use a WASM root.
 
 ```ts
 import { transform } from "@swc/core";
@@ -46,14 +52,14 @@ const result = await transform(source, {
 
 ## Run TypeScript directly
 
-The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()` on Node 24+ and Deno 2.9.7+. Remote application modules are not transformed.
+The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed.
 
 ### Node.js
 
-Install the plugin and ts-pattern:
+Install the plugin, `@swc/core`, and ts-pattern:
 
 ```sh
-npm install ts-pattern @scarf005/swc-plugin-ts-pattern
+npm install ts-pattern @swc/core@~1.15.0 @scarf005/swc-plugin-ts-pattern
 ```
 
 Preload the loader:

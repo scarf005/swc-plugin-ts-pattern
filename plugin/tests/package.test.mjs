@@ -32,6 +32,7 @@ test("packed npm archive exposes a working WASM, transform API, loader and CLI",
       "--no-fund",
       "--package-lock=false",
       join(directory, filename),
+      "@swc/core@~1.15.0",
     ], { cwd: directory })
     const env = { ...process.env }
     delete env.SWC_PLUGIN_TS_PATTERN_PATH

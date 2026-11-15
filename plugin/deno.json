@@ -15,7 +15,7 @@
   },
   "nodeModulesDir": "auto",
   "imports": {
-    "@swc/core": "npm:@swc/core@1.15.33"
+    "@swc/core": "npm:@swc/core@~1.15.0"
   },
   "compilerOptions": {
     "lib": [
@@ -38,6 +38,6 @@
     ]
   },
   "allowScripts": [
-    "npm:@swc/core@1.15.33"
+    "npm:@swc/core@~1.15.0"
   ]
 }

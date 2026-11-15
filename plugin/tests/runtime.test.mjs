@@ -91,7 +91,7 @@ for (const mode of ["cli", "preload"]) {
         JSON.stringify({
           imports: {
             "ts-pattern": "npm:ts-pattern@5.9.0",
-            "@swc/core": "npm:@swc/core@1.15.33",
+            "@swc/core": "npm:@swc/core@~1.15.0",
           },
           nodeModulesDir: "auto",
         }),
@@ -173,7 +173,7 @@ for (const runtime of ["Node", "Deno"]) {
             JSON.stringify({
               imports: {
                 "ts-pattern": "npm:ts-pattern@5.9.0",
-                "@swc/core": "npm:@swc/core@1.15.33",
+                "@swc/core": "npm:@swc/core@~1.15.0",
               },
               nodeModulesDir: "auto",
             }),
@@ -248,7 +248,7 @@ test(
           JSON.stringify({
             imports: {
               "ts-pattern": "npm:ts-pattern@5.9.0",
-              "@swc/core": "npm:@swc/core@1.15.33",
+              "@swc/core": "npm:@swc/core@~1.15.0",
             },
             nodeModulesDir: "auto",
           }),
