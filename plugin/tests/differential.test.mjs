@@ -28,7 +28,7 @@ const chains = {
   unionNot:
     'match(input).with(P.union("a", 1, null), (v) => v).with({ a: P.not(P.number) }, () => "not").with(P.not(P.nullish), () => "nn").otherwise(() => 0)',
   refinements:
-    'match(input).with(P.string.startsWith("a").select(), (s) => s).with(P.number.between(0, 2), () => "between").with(P.number.int(), () => "int").otherwise(() => 0)',
+    'match(input).with(P.string.startsWith("a").select(), (s) => s).with(P.number.between(0, 2), () => "between").with(P.number.int(), () => "int").with(P.string.startsWith("a").endsWith("b"), () => "ab").with(P.number.int().positive().lt(3), () => "small").with(P.bigint.positive().between(1n, 3n).optional().select(), (b) => b).otherwise(() => 0)',
   bigints:
     'match(input).with(P.bigint.between(0n, 0n), () => "between").with(P.bigint.gt(0n), () => "gt").with(P.bigint.lt(-1n), () => "lt").with(P.bigint.gte(1n), () => "gte").with(P.bigint.lte(-1n), () => "lte").with(P.bigint.positive(), () => "positive").with(P.bigint.negative(), () => "negative").otherwise(() => 0)',
   whenPatterns:
