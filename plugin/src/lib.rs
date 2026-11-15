@@ -331,7 +331,7 @@ impl TsPatternTransformer {
         if let Some((method, _)) = methods.iter().find(|(method, _)| {
             !matches!(
                 *method,
-                "with" | "when" | "otherwise" | "exhaustive" | "run" | "returnType"
+                "with" | "when" | "otherwise" | "exhaustive" | "run" | "returnType" | "narrow"
             )
         }) {
             return format!("method-{method}");
@@ -606,8 +606,8 @@ impl TsPatternTransformer {
                 break (callee, &input.expr);
             }
             let (method, next) = as_method_call(call)?;
-            // `returnType()` only changes types and returns the matcher.
-            if !(method == "returnType" && call.args.is_empty()) {
+            // `returnType()` and `narrow()` only change types and return the matcher.
+            if !(matches!(method, "returnType" | "narrow") && call.args.is_empty()) {
                 arm_calls.push((method, call));
             }
             receiver = next;

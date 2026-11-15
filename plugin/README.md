@@ -61,7 +61,7 @@ Reasons:
 - `unstable-argument`: a later arm reads a value that code in an earlier arm can change.
 - `no-terminal`: the chain does not end in `.otherwise()`, `.exhaustive()` or `.run()`.
 - `exhaustive-handler`: `.exhaustive()` gets a spread, more than one argument, or a handler that code in the chain can change.
-- `method-<name>`: the chain calls the method `<name>`, for example `method-narrow`.
+- `method-<name>`: the chain calls the method `<name>`, which ts-pattern does not define.
 - `isMatching`: the plugin cannot compile this `isMatching` call.
 
 ## Run TypeScript directly
@@ -388,4 +388,4 @@ Supported patterns:
 
 Supported selection patterns include `P.select` and array/record selection aggregation. Record key selections preserve numeric coercion and original-key matching. Selections named `__proto__`, and record selections using inherited `Object.prototype` names such as `constructor` or `toString`, retain the runtime to preserve its selection and error behavior. The plugin also handles `.when`, `P.set`, `P.map`, `P.record`, `P.intersection`, and common string, number and bigint refinements.
 
-Unsupported chains, custom matcher objects, `.narrow()`, and unsupported combinations are left unchanged to preserve runtime behavior. Keep ts-pattern installed even when most expressions compile.
+`.narrow()` compiles away like `.returnType()`. ts-pattern 5.0-5.7 do not define it, so there the raw chain throws a `TypeError` and the compiled chain does not. Unsupported chains, custom matcher objects, and unsupported combinations are left unchanged to preserve runtime behavior. Keep ts-pattern installed even when most expressions compile.

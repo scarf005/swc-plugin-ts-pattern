@@ -22,9 +22,6 @@
   "multiple-patterns.test.ts": {
     "no-terminal": 1
   },
-  "narrow.test.ts": {
-    "method-narrow": 2
-  },
   "objects.test.ts": {
     "isMatching": 2
   },
