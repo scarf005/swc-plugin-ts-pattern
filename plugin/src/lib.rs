@@ -61,6 +61,9 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
     program
 }
 
+/// Temps by selection name.
+type UnionWrites = Vec<(Option<String>, Ident)>;
+
 #[derive(Default)]
 struct TsPatternTransformer {
     unresolved_ctxt: SyntaxContext,
@@ -79,6 +82,10 @@ struct TsPatternTransformer {
     /// Temporaries that the current arm's tests assign; `arm_parts` declares
     /// them.
     pending_temps: RefCell<Vec<Ident>>,
+    /// The temps of the `P.union` whose alternatives are being lowered, by
+    /// selection name. Each matcher in an alternative writes its selections
+    /// to them as soon as it matches, like ts-pattern's shared selector.
+    union_writes: RefCell<Option<UnionWrites>>,
     /// Where expression temporaries can be declared: the innermost function
     /// body, or `None` where a `let` cannot reach, e.g. parameter defaults.
     hoist_scopes: Vec<Option<Vec<Ident>>>,
@@ -1286,24 +1293,74 @@ impl TsPatternTransformer {
         patterns: impl IntoIterator<Item = &'a Expr>,
         selections: &mut Vec<SelectionBinding>,
     ) -> Option<Expr> {
-        let patterns = patterns
+        let patterns = patterns.into_iter().collect::<Vec<_>>();
+        let lower = || {
+            patterns
+                .iter()
+                .map(|pattern| {
+                    let mut selected = Vec::new();
+                    let test =
+                        self.pattern_test_with_selections(value.clone(), pattern, &mut selected)?;
+                    Some((test, selected))
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        let (alternatives, temps) = self.with_local_temps(lower)?;
+        let mut names = Vec::new();
+        for (_, selected) in &alternatives {
+            for selection in selected {
+                if !names.contains(&selection.name) {
+                    names.push(selection.name.clone());
+                }
+            }
+        }
+        if let Some((test, selected)) = self.alternatives_test(alternatives) {
+            self.pending_temps.borrow_mut().extend(temps);
+            selections.extend(selected);
+            return Some(test);
+        }
+        // ts-pattern sets every name of every alternative to `undefined`
+        // first. A name keeps the last value written to it, also by an
+        // alternative that failed later.
+        if names.contains(&None) && names.len() > 1 {
+            return None;
+        }
+        let writes = names
             .into_iter()
-            .map(|pattern| {
-                let mut selected = Vec::new();
-                let test = self.pattern_test_with_selections(value.clone(), pattern, &mut selected)?;
-                Some((test, selected))
-            })
+            .map(|name| (name, private_ident!("_tsPatternSelected")))
+            .collect::<Vec<_>>();
+        let outer = self.union_writes.replace(Some(writes.clone()));
+        let tests = lower();
+        self.union_writes.replace(outer);
+        let tests = tests?
+            .into_iter()
+            .map(|(test, selected)| selected.is_empty().then_some(test))
             .collect::<Option<Vec<_>>>()?;
-        let (test, selected) = self.alternatives_test(patterns)?;
-        selections.extend(selected);
+        let test = writes.iter().rev().fold(
+            join_tests(tests.into_iter().map(Some), or)?,
+            |test, (_, temp)| {
+                seq_expr(
+                    assign_expr(temp.clone(), undefined_expr(self.unresolved_ctxt)),
+                    test,
+                )
+            },
+        );
+        self.pending_temps
+            .borrow_mut()
+            .extend(writes.iter().map(|(_, temp)| temp.clone()));
+        selections.extend(writes.into_iter().map(|(name, temp)| SelectionBinding {
+            name,
+            value: ident_expr(&temp),
+            ..Default::default()
+        }));
         Some(test)
     }
 
     /// ts-pattern tries the patterns in order with one shared selection
     /// object, so each name takes its value from the pattern that matched.
-    /// Patterns that select different names stay on the runtime, because a
-    /// pattern that failed can leave names that the matched pattern lacks.
-    /// Returns the joined test and selections that read capture temps, which
+    /// Patterns that select different names give `None`, because a pattern
+    /// that failed can leave names that the matched pattern lacks;
+    /// `union_test` writes those through `union_writes`. Returns the joined test and selections that read capture temps, which
     /// go to `pending_temps`.
     fn alternatives_test(
         &self,
@@ -1375,6 +1432,42 @@ impl TsPatternTransformer {
     }
 
     fn pattern_test_with_selections(
+        &self,
+        value: Expr,
+        pattern: &Expr,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        let writes = self.union_writes.borrow().clone();
+        // Object and array literals pass the selector on to their parts.
+        let Some(writes) = writes.filter(|_| {
+            !matches!(
+                self.resolve_pattern_expr(pattern),
+                Expr::Object(_) | Expr::Array(_)
+            )
+        }) else {
+            return self.lower_pattern(value, pattern, selections);
+        };
+        // A matcher collects its own selections and passes them on only when
+        // it matches.
+        let start = selections.len();
+        self.union_writes.replace(None);
+        let test = self.lower_pattern(value, pattern, selections);
+        self.union_writes.replace(Some(writes.clone()));
+        let mut test = test?;
+        for selection in selections.drain(start..) {
+            let (_, temp) = writes
+                .iter()
+                .find(|(name, _)| name == &selection.name)
+                .filter(|_| selection.capture_group.is_none())?;
+            test = and(
+                test,
+                seq_expr(assign_expr(temp.clone(), selection.value), bool_lit(true)),
+            );
+        }
+        Some(test)
+    }
+
+    fn lower_pattern(
         &self,
         value: Expr,
         pattern: &Expr,
