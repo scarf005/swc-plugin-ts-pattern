@@ -339,6 +339,21 @@ impl TsPatternTransformer {
         current
     }
 
+    /// Whether evaluating `expr` earlier gives the same value and runs no code:
+    /// literals, functions, module constants and globals.
+    fn is_stable_value(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Lit(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
+            Expr::Paren(paren) => self.is_stable_value(&paren.expr),
+            Expr::Ident(ident) => {
+                ident.ctxt == self.unresolved_ctxt
+                    || (self.const_bindings.contains_key(&ident.to_id())
+                        && !self.mutated_bindings.contains(&ident.to_id()))
+            }
+            _ => false,
+        }
+    }
+
     fn safe_const_pattern(&self, expr: &Expr) -> bool {
         match expr {
             Expr::TsConstAssertion(assertion) => self.safe_const_pattern(&assertion.expr),
@@ -603,15 +618,17 @@ impl TsPatternTransformer {
     /// Evaluates the input and the values the chain's patterns and callbacks
     /// evaluate once, in source order, into the returned bindings, and
     /// rewrites the chain to read them. ts-pattern evaluates the arguments of
-    /// an arm after the arms before it run, so an argument with effects after
-    /// an arm that runs code stays on the runtime.
+    /// an arm after the arms before it run, so after an arm that runs code,
+    /// an argument that code could change or observe stays on the runtime.
     fn prepare_chain(&self, chain: MatchChain) -> Option<(Vec<(Ident, Expr)>, MatchChain)> {
         let input = private_ident!("_tsPatternInput");
         let mut params = vec![input.clone()];
         let mut args = vec![*chain.input];
         let mut arms = Vec::with_capacity(chain.arms.len());
         let mut quiet = true;
-        let reorders = |quiet: bool, args: &[Expr]| !quiet && args.iter().any(is_effectful_expr);
+        let reorders = |quiet: bool, args: &[Expr]| {
+            !quiet && args.iter().any(|arg| !self.is_stable_value(arg))
+        };
         for arm in chain.arms {
             let start = args.len();
             let arm_quiet = arm.guard.is_none()
@@ -1065,16 +1082,17 @@ impl TsPatternTransformer {
 
         // A record that selects nothing makes no selections, so the handler
         // gets the input; this works only when the record makes every
-        // selection of the arm.
+        // selection of the arm, and only when no other pattern, such as
+        // `P.optional`, wraps the record result.
         let record_group = selections
             .first()
             .and_then(|selection| selection.capture_group.clone());
         if selections
             .iter()
             .any(|selection| selection.capture_group.is_some())
-            && selections
-                .iter()
-                .any(|selection| selection.capture_group != record_group)
+            && selections.iter().any(|selection| {
+                selection.capture_group != record_group || !matches!(selection.value, Expr::Call(_))
+            })
         {
             return None;
         }
@@ -1660,6 +1678,14 @@ impl TsPatternTransformer {
             .iter()
             .chain(value_selections.iter())
             .collect::<Vec<_>>();
+        // The values of a nested record are its result object, not its
+        // selections.
+        if all_selections
+            .iter()
+            .any(|selection| selection.capture_group.is_some())
+        {
+            return None;
+        }
         if all_selections.iter().any(|selection| {
             selection
                 .name
@@ -2068,11 +2094,11 @@ fn guard_requires_snapshot(guard: &Expr) -> bool {
     }
 }
 
-/// Whether a handler is an arrow whose expression body calls and mutates
-/// nothing.
+/// Whether a handler is an arrow with plain parameters whose expression body
+/// calls and mutates nothing.
 fn is_quiet_handler(handler: &Expr) -> bool {
     match handler {
-        Expr::Arrow(arrow) => match &*arrow.body {
+        Expr::Arrow(arrow) if arrow.params.iter().all(Pat::is_ident) => match &*arrow.body {
             BlockStmtOrExpr::Expr(body) => {
                 let mut detector = EffectDetector { effect: false };
                 body.visit_with(&mut detector);
