@@ -1770,3 +1770,25 @@ test("P.array patterns spread elsewhere stay variadic", async () => {
     ["spread", "variadic"],
   )
 })
+
+test("matches on a computed input compile in any expression position", async () => {
+  const compiled = await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    const top = match({ one: 1 }).with({ one: 1 }, () => "top").exhaustive();
+    export const run = () => {
+      const log = [];
+      const source = { get value() { log.push("value"); return { kind: "a" }; } };
+      const wrap = (value) => [value];
+      return [
+        top,
+        wrap(match(source.value).with({ kind: "a" }, () => 1).otherwise(() => 0)),
+        wrap(match({ kind: "b" }).with({ kind: "a" }, () => 1).otherwise(() => 0)),
+        log,
+      ];
+    };
+  `,
+    ["top", [1], [0], ["value"]],
+  )
+  assert.doesNotMatch(compiled, /\.with\(/)
+})
