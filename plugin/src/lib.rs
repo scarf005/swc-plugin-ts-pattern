@@ -1473,6 +1473,26 @@ impl TsPatternTransformer {
         }
     }
 
+    /// Whether `selections` come in the `getSelectionKeys` order of
+    /// `pattern`. `P.optional` and `P.array` set the names to `undefined` in
+    /// that order when they match nothing, e.g. for `undefined` or `[]`.
+    fn in_selection_key_order(&self, pattern: &Expr, selections: &[SelectionBinding]) -> bool {
+        let mut keys = Vec::new();
+        self.selection_keys(pattern, &mut keys);
+        // A repeated name keeps the place where it first appears.
+        let mut names = Vec::new();
+        for selection in selections {
+            if !names.contains(&&selection.name) {
+                names.push(&selection.name);
+            }
+        }
+        names
+            .into_iter()
+            .map(|name| keys.iter().position(|key| key == name))
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|positions| positions.is_sorted())
+    }
+
     fn pattern_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
         let mut selections = Vec::new();
         self.pattern_test_with_selections(value, pattern, &mut selections)
@@ -1774,6 +1794,9 @@ impl TsPatternTransformer {
         let mut inner_selections = Vec::new();
         let test =
             self.pattern_test_with_selections(value.clone(), pattern, &mut inner_selections)?;
+        if !self.in_selection_key_order(pattern, &inner_selections) {
+            return None;
+        }
         selections.extend(
             inner_selections
                 .into_iter()
@@ -1816,6 +1839,9 @@ impl TsPatternTransformer {
             )?;
             Some((test, item_selections))
         })?;
+        if !self.in_selection_key_order(&item.expr, &item_selections) {
+            return None;
+        }
         // A name that one item selects twice gets both values; that stays on
         // the runtime, as do nested record results.
         let mut arrays: Vec<(Option<String>, Ident)> = Vec::new();
