@@ -15,37 +15,29 @@ const rewriteImports = (source: string) =>
     .replaceAll("from '../src/index';", 'from "ts-pattern";')
     .replaceAll('from "../src/index";', 'from "ts-pattern";')
 
-const noMatchRequiredFiles = new Set([
-  "instance-of.test.ts",
-  "otherwise.test.ts",
-  "strings.test.ts",
-  "unions.test.ts",
-])
+const fallbacksBaseline = new URL("vendored-fallbacks.json", import.meta.url)
+const updateBaseline = process.argv.includes("--update-fallbacks")
 
-const escapeRegExp = (value: string) => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
-
-const tsPatternRequireAliases = (source: string) =>
-  [
-    ...source.matchAll(
-      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(["'](?:npm:)?ts-pattern["']\);/g,
-    ),
-  ].map(([, alias]) => alias)
-
-// The plugin keeps `throw match(input).exhaustive()` as the no-match fallback,
-// so ts-pattern throws its own NonExhaustiveError.
-const withoutExhaustiveFallbacks = (source: string) =>
-  source.replace(/throw \(0, [A-Za-z_$][\w$]*\.match\)\([A-Za-z_$][\w$]*\)\.exhaustive\(\);/g, "")
-
-const residualTsPatternMatchCall = (code: string) => {
-  const source = withoutExhaustiveFallbacks(code)
-  const directMatch = /require\(["'](?:npm:)?ts-pattern["']\)\.match\s*\(/.exec(source)
-  if (directMatch) return directMatch[0]
-
-  for (const alias of tsPatternRequireAliases(source)) {
-    const aliasMatch = new RegExp(`(?:\\(0,\\s*)?${escapeRegExp(alias)}\\.match\\)?\\s*\\(`).exec(
-      source,
-    )
-    if (aliasMatch) return aliasMatch[0]
+// Counts the matches that stay on the runtime, by reason code, as the
+// plugin reports them with `onFallback: "error"`.
+const fallbackReasons = async (code: string) => {
+  try {
+    await transformWithSwcWasm({
+      code,
+      moduleType: "commonjs",
+      plugin: true,
+      pluginOptions: { onFallback: "error" },
+    })
+    return {}
+  } catch (error) {
+    const reasons: Record<string, number> = {}
+    for (const [, reason] of String(error).matchAll(
+      /stays on the ts-pattern runtime \(([\w-]+)\)/g,
+    )) {
+      reasons[reason] = (reasons[reason] ?? 0) + 1
+    }
+    if (Object.keys(reasons).length === 0) throw error
+    return reasons
   }
 }
 
@@ -88,12 +80,8 @@ await cp(new URL("types-catalog/", testsRoot), new URL("types-catalog/", generat
 
 try {
   const files = await testFiles()
-  const filesRequiringNoMatch = files.filter((file) => noMatchRequiredFiles.has(file))
-  const missingNoMatchFiles = [...noMatchRequiredFiles].filter((file) => !files.includes(file))
-  const failures: string[] =
-    missingNoMatchFiles.length > 0
-      ? [`No-match requirement files not found: ${missingNoMatchFiles.join(", ")}`]
-      : []
+  const failures: string[] = []
+  const fallbacks: Record<string, Record<string, number>> = {}
 
   for (const file of files) {
     const url = new URL(file, testsRoot)
@@ -104,16 +92,21 @@ try {
         moduleType: "commonjs",
         plugin: true,
       })
-      const residualMatch = noMatchRequiredFiles.has(file)
-        ? residualTsPatternMatchCall(output.code)
-        : undefined
-      if (residualMatch) {
-        failures.push(`${file}: transformed output still calls ts-pattern match: ${residualMatch}`)
-      }
+      const reasons = await fallbackReasons(source)
+      if (Object.keys(reasons).length > 0) fallbacks[file] = reasons
       await writeFile(new URL(file.replace(/\.test\.ts$/, ".test.cjs"), generatedRoot), output.code)
     } catch (error) {
       failures.push(`${file}: ${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  const baseline = JSON.parse(await readFile(fallbacksBaseline, "utf8"))
+  if (updateBaseline) {
+    await writeFile(fallbacksBaseline, `${JSON.stringify(fallbacks, null, 2)}\n`)
+  } else if (JSON.stringify(fallbacks) !== JSON.stringify(baseline)) {
+    failures.push(
+      `Runtime fallbacks differ from scripts/vendored-fallbacks.json. Run \`just update-vendored-fallbacks\` after you check them:\n${JSON.stringify(fallbacks, null, 2)}`,
+    )
   }
 
   if (failures.length > 0) {
@@ -122,9 +115,10 @@ try {
 
   await writeGeneratedConfig()
   console.log(`Transformed ${files.length} vendored ts-pattern test files`)
-  console.log(
-    `Verified ${filesRequiringNoMatch.length} vendored ts-pattern test files contain no runtime match calls`,
-  )
+  const total = Object.values(fallbacks)
+    .flatMap(Object.values)
+    .reduce((sum, count) => sum + count, 0)
+  console.log(`${total} vendored ts-pattern matches stay on the runtime, as the baseline expects`)
   runGeneratedTests()
 } finally {
   await rm(generatedRoot, { recursive: true, force: true })

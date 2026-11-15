@@ -18,6 +18,7 @@ type TransformOptions = {
   code: string
   moduleType: ModuleType
   plugin: boolean
+  pluginOptions?: Record<string, unknown>
 }
 
 export const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -40,8 +41,13 @@ const cacheRootForPlugin = () => {
   return resolve(webRoot, ".swc-cache", `${size}-${Math.trunc(mtimeMs)}`)
 }
 
-export const transformWithSwcWasm = async ({ code, moduleType, plugin }: TransformOptions) => {
-  const plugins: [string, Record<string, never>][] = plugin ? [[pluginName, {}]] : []
+export const transformWithSwcWasm = async ({
+  code,
+  moduleType,
+  plugin,
+  pluginOptions = {},
+}: TransformOptions) => {
+  const plugins: [string, Record<string, unknown>][] = plugin ? [[pluginName, pluginOptions]] : []
   const pluginBytes = plugin ? { [pluginName]: readFileSync(pluginPath) } : undefined
 
   return await loadSwcWasm().transform(

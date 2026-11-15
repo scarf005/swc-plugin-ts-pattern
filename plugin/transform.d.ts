@@ -1,7 +1,7 @@
 export type TransformTsPatternOptions = {
   filename?: string
   pluginPath?: string
-  pluginOptions?: Record<string, unknown>
+  pluginOptions?: { onFallback?: "warn" | "error" }
   sourceMaps?: boolean | "inline"
   swcOptions?: Record<string, unknown>
 }

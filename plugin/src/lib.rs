@@ -4,23 +4,60 @@ use std::{
 };
 
 use swc_core::{
-    common::{BytePos, EqIgnoreSpan, Span, Spanned, SyntaxContext, DUMMY_SP},
+    common::{errors::SourceMapper, BytePos, EqIgnoreSpan, Span, Spanned, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
         utils::{prepend_stmts, private_ident},
         visit::{Visit, VisitMut, VisitMutWith, VisitWith},
     },
-    plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
+    plugin::{errors::HANDLER, plugin_transform, proxies::TransformPluginProgramMetadata},
 };
 
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
+    let on_fallback = match metadata
+        .get_transform_plugin_config()
+        .and_then(|config| serde_json::from_str::<serde_json::Value>(&config).ok())
+        .as_ref()
+        .and_then(|config| config.get("onFallback"))
+    {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some("warn") => Some(false),
+            Some("error") => Some(true),
+            _ => {
+                HANDLER.with(|handler| {
+                    handler.err(r#"swc-plugin-ts-pattern: onFallback must be "warn" or "error""#)
+                });
+                None
+            }
+        },
+    };
     let mut transformer = TsPatternTransformer {
         unresolved_ctxt: SyntaxContext::empty().apply_mark(metadata.unresolved_mark),
         ..Default::default()
     };
     let mut program = program;
     program.visit_mut_with(&mut transformer);
+    if let Some(is_error) = on_fallback {
+        for (span, reason) in transformer.fallbacks(&program) {
+            let message = format!(
+                "swc-plugin-ts-pattern: this match stays on the ts-pattern runtime ({reason})"
+            );
+            if is_error {
+                HANDLER.with(|handler| handler.struct_span_err(span, &message).emit());
+            } else {
+                // SWC drops plugin warnings, so print them.
+                let loc = metadata.source_map.lookup_char_pos(span.lo);
+                eprintln!(
+                    "{}:{}:{}: warning: {message}",
+                    loc.file.name,
+                    loc.line,
+                    loc.col_display + 1
+                );
+            }
+        }
+    }
     program
 }
 
@@ -247,7 +284,81 @@ impl VisitMut for TsPatternTransformer {
     }
 }
 
+/// Finds the `match` and `isMatching` calls of the source that stay in the
+/// output, outermost chain first.
+struct Fallbacks<'a> {
+    transformer: &'a TsPatternTransformer,
+    found: Vec<(Span, String)>,
+}
+
+impl Visit for Fallbacks<'_> {
+    fn visit_expr(&mut self, expr: &Expr) {
+        let transformer = self.transformer;
+        let mut methods = Vec::new();
+        let mut current = expr;
+        while let Expr::Call(call) = current {
+            if call.span.is_dummy() {
+                break;
+            }
+            if transformer.is_imported_call(call, &transformer.is_matching_imports, "isMatching") {
+                self.found.push((call.span, "isMatching".into()));
+                break;
+            }
+            if transformer.is_imported_call(call, &transformer.match_imports, "match") {
+                let reason = transformer.fallback_reason(expr, &methods);
+                self.found.push((call.span, reason));
+                break;
+            }
+            let Some((method, receiver)) = as_method_call(call) else {
+                break;
+            };
+            methods.push((method, call.args.len()));
+            current = receiver;
+        }
+        expr.visit_children_with(self);
+    }
+}
+
 impl TsPatternTransformer {
+    /// The calls this transform left for ts-pattern, with a reason code.
+    fn fallbacks(&self, program: &Program) -> Vec<(Span, String)> {
+        let mut visitor = Fallbacks {
+            transformer: self,
+            found: Vec::new(),
+        };
+        program.visit_with(&mut visitor);
+        // An inner chain call reached again from an outer one reports once.
+        let mut seen = HashSet::new();
+        visitor.found.retain(|(span, _)| seen.insert(*span));
+        visitor.found
+    }
+
+    /// Why the chain `expr`, whose methods are `methods` from the last, stays
+    /// on the runtime.
+    fn fallback_reason(&self, expr: &Expr, methods: &[(&str, usize)]) -> String {
+        if let Some((method, _)) = methods
+            .iter()
+            .find(|(method, _)| !matches!(*method, "with" | "when" | "otherwise" | "exhaustive"))
+        {
+            return format!("method-{method}");
+        }
+        match methods.first() {
+            Some(("exhaustive", 0) | ("otherwise", 1)) => {}
+            Some(("exhaustive", _)) => return "exhaustive-handler".into(),
+            _ => return "no-terminal".into(),
+        }
+        match self.parse_match_chain(expr) {
+            None => "unsupported-arm".into(),
+            Some(chain)
+                if needs_prepared_expression(self, &chain)
+                    && self.prepare_chain(chain.clone()).is_none() =>
+            {
+                "unstable-argument".into()
+            }
+            Some(_) => "unsupported-pattern".into(),
+        }
+    }
+
     fn collect_imports(&mut self, module: &Module) {
         for item in &module.body {
             let ModuleItem::ModuleDecl(ModuleDecl::Import(import)) = item else {
@@ -2156,7 +2267,7 @@ struct BindingWrites {
 impl BindingWrites {
     /// Lets a `const` or class name be read in the later statements of its own
     /// list, except hoisted function declarations, which can run earlier.
-    fn declare_in_list<'a>(&mut self, items: &[(Option<&'a Decl>, bool, Span)]) {
+    fn declare_in_list(&mut self, items: &[(Option<&Decl>, bool, Span)]) {
         for (index, (decl, _, _)) in items.iter().enumerate() {
             let names: Vec<Id> = match decl {
                 Some(Decl::Class(class)) => vec![class.ident.to_id()],

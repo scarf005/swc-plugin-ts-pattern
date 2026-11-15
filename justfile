@@ -26,6 +26,11 @@ test-vendored-ts-pattern:
     node scripts/check-vendored-ts-pattern-swc.mts
     cd vendor/ts-pattern && npm test
 
+# Rewrites scripts/vendored-fallbacks.json with the vendored matches that stay on the runtime.
+update-vendored-fallbacks:
+    cd vendor/ts-pattern && npm ci
+    node scripts/check-vendored-ts-pattern-swc.mts --update-fallbacks
+
 bench-ts-pattern: bench
 
 bench-file:

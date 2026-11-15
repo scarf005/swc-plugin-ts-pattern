@@ -44,6 +44,26 @@ const result = await transform(source, {
 })
 ```
 
+### Find matches that stay on the runtime
+
+The plugin keeps a match on the ts-pattern runtime when it cannot compile it. Set `onFallback` in the plugin options to find these matches:
+
+```ts
+experimental: { plugins: [[await defaultPluginPath(), { onFallback: "warn" }]] },
+```
+
+- `"warn"` writes `file:line:column: warning: ... (reason)` to stderr for each match. SWC does not show plugin warnings, so the plugin writes them itself.
+- `"error"` makes the transform fail and shows each match in the source.
+
+Reasons:
+
+- `unsupported-pattern`: the plugin cannot compile a pattern or arm of the chain.
+- `unstable-argument`: a later arm reads a value that code in an earlier arm can change.
+- `no-terminal`: the chain does not end in `.otherwise()` or `.exhaustive()`.
+- `exhaustive-handler`: `.exhaustive()` gets a handler.
+- `method-<name>`: the chain calls the method `<name>`, for example `method-run`.
+- `isMatching`: the plugin cannot compile this `isMatching` call.
+
 ## Run TypeScript directly
 
 The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed. On Node.js, `.ts` and `.tsx` files load as CommonJS when the nearest `package.json` sets `"type": "commonjs"`. Imports of `./foo.js`, `./foo.jsx`, `./foo.mjs`, and `./foo.cjs` resolve to the matching TypeScript source.
