@@ -1832,3 +1832,37 @@ test("iterated P.array aliases in tuples keep the runtime result", async () => {
     ["b", 0],
   )
 })
+
+test("P.union in a P.record key pushes the selected values", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () =>
+      JSON.stringify(
+        match({ x: 1, 2: 3 })
+          .with(P.record(P.union(P.select("a", P.number), P.select("b", P.string)), P.any), (s) => s)
+          .otherwise(() => 0),
+      );
+  `,
+    '{"a":[2,null,null],"b":[null,"2","x"]}',
+  )
+})
+
+test("P.union selections keep the key order of the pattern", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const check = (input) =>
+        JSON.stringify(
+          match(input)
+            .with(P.union([P.select("x"), ...P.array(P.select("y")), P.select("z")], { a: P.select("w") }), (s) => s)
+            .with(P.union([P.select("x"), ...P.array(P.select("y")), P.select("z")], { x: P.select("x"), y: P.select("y"), z: P.select("z") }), (s) => s)
+            .otherwise(() => 0),
+        );
+      return [check([1, 2, 3]), check({ x: 1, y: 2, z: 3 })];
+    };
+  `,
+    ['{"x":1,"y":[2],"z":3}', '{"x":1,"y":2,"z":3}'],
+  )
+})
