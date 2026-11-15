@@ -1256,10 +1256,6 @@ impl TsPatternTransformer {
         Some((test, handler_input, captures))
     }
 
-    /// ts-pattern tries the patterns in order with one shared selection
-    /// object, so each name takes its value from the pattern that matched.
-    /// Patterns that select different names stay on the runtime, because a
-    /// pattern that failed can leave names that the matched pattern lacks.
     fn multi_pattern_parts(
         &self,
         match_input: Expr,
@@ -1267,8 +1263,47 @@ impl TsPatternTransformer {
         arm: &MatchArm,
         patterns: Vec<(Expr, Vec<SelectionBinding>)>,
     ) -> Option<(Expr, Expr, Vec<Ident>)> {
+        let (mut test, handler_selections) = self.alternatives_test(patterns)?;
+        if let Some(guard) = &arm.guard {
+            test = and(test, predicate_result(guard, guard_input));
+        }
+        let handler_input = selection_handler_input(match_input, handler_selections)?;
+        Some((test, handler_input, self.pending_temps.take()))
+    }
+
+    /// Tests each of `patterns` in turn until one matches, like `P.union`
+    /// and several patterns in one `.with`.
+    fn union_test<'a>(
+        &self,
+        value: Expr,
+        patterns: impl IntoIterator<Item = &'a Expr>,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        let patterns = patterns
+            .into_iter()
+            .map(|pattern| {
+                let mut selected = Vec::new();
+                let test = self.pattern_test_with_selections(value.clone(), pattern, &mut selected)?;
+                Some((test, selected))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let (test, selected) = self.alternatives_test(patterns)?;
+        selections.extend(selected);
+        Some(test)
+    }
+
+    /// ts-pattern tries the patterns in order with one shared selection
+    /// object, so each name takes its value from the pattern that matched.
+    /// Patterns that select different names stay on the runtime, because a
+    /// pattern that failed can leave names that the matched pattern lacks.
+    /// Returns the joined test and selections that read capture temps, which
+    /// go to `pending_temps`.
+    fn alternatives_test(
+        &self,
+        patterns: Vec<(Expr, Vec<SelectionBinding>)>,
+    ) -> Option<(Expr, Vec<SelectionBinding>)> {
         let mut names: Vec<Option<String>> = Vec::new();
-        for selection in &patterns[0].1 {
+        for selection in &patterns.first()?.1 {
             if !names.contains(&selection.name) {
                 names.push(selection.name.clone());
             }
@@ -1311,23 +1346,20 @@ impl TsPatternTransformer {
             }
             tests.push(Some(test));
         }
-        let mut test = join_tests(tests, or)?;
-        if let Some(guard) = &arm.guard {
-            test = and(test, predicate_result(guard, guard_input));
-        }
-        let mut captures = self.pending_temps.take();
-        let handler_selections = named_captures
-            .iter()
-            .map(|(name, capture)| SelectionBinding {
-                name: name.clone(),
-                value: ident_expr(capture),
-                capture_group: None,
-                projection: None,
+        let test = join_tests(tests, or)?;
+        let mut temps = self.pending_temps.borrow_mut();
+        let selections = named_captures
+            .into_iter()
+            .map(|(name, capture)| {
+                temps.push(capture.clone());
+                SelectionBinding {
+                    name,
+                    value: ident_expr(&capture),
+                    ..Default::default()
+                }
             })
             .collect();
-        let handler_input = selection_handler_input(match_input, handler_selections)?;
-        captures.extend(named_captures.into_iter().map(|(_, capture)| capture));
-        Some((test, handler_input, captures))
+        Some((test, selections))
     }
 
     fn pattern_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
@@ -1435,12 +1467,9 @@ impl TsPatternTransformer {
                 UnaryOp::Bang,
                 self.unselected_test(value, single_arg(call)?)?,
             )),
-            PApi::Call("union", call) => join_tests(
-                call.args
-                    .iter()
-                    .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
-                or,
-            ),
+            PApi::Call("union", call) => {
+                self.union_test(value, call.args.iter().map(|arg| &*arg.expr), selections)
+            }
             // ts-pattern tests every pattern in order and keeps their
             // selections only when all match, like `&&` with outer selections.
             PApi::Call("intersection", call) => join_tests(
@@ -1465,10 +1494,9 @@ impl TsPatternTransformer {
                 self.pattern_test_with_selections(value.clone(), base, selections)?,
                 self.pattern_test_with_selections(value, single_arg(call)?, selections)?,
             )),
-            PApi::Modifier("or", base, call) => Some(or(
-                self.unselected_test(value.clone(), base)?,
-                self.unselected_test(value, single_arg(call)?)?,
-            )),
+            PApi::Modifier("or", base, call) => {
+                self.union_test(value, [base, single_arg(call)?], selections)
+            }
             PApi::Chain("string", method, call) => string_chain_test(value, method, call),
             PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
             PApi::Chain("bigint", method, call) => bigint_chain_test(value, method, call),
