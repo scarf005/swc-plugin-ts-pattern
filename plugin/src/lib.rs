@@ -3749,6 +3749,24 @@ const result = match(input).with("a", () => 1).with("b", () => 2).otherwise(() =
     }
 
     #[test]
+    fn declares_temporaries_after_directive_prologues() {
+        let output = transform(
+            r#"import { match, P } from "ts-pattern";
+export function run(x: any) { "worklet"; "use strict"; return [match(x).with({ a: { b: P.select() } }, (v) => v).otherwise(() => 0)]; }
+class C { constructor(x: any) { "use strict"; this.v = [match(x).with({ a: { b: P.select() } }, (v) => v).otherwise(() => 0)]; } }"#,
+        );
+
+        assert!(
+            output.contains("{\n    \"worklet\";\n    \"use strict\";\n    let _tsPatternA;"),
+            "{output}"
+        );
+        assert!(
+            output.contains("{\n        \"use strict\";\n        let _tsPatternA;"),
+            "{output}"
+        );
+    }
+
+    #[test]
     fn emits_switch_block_for_arrow_body_literal_match() {
         let output = transform(
             r#"import { match } from "ts-pattern";
