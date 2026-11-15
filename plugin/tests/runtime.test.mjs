@@ -192,6 +192,67 @@ for (const runtime of ["Node", "Deno"]) {
   }
 }
 
+const child =
+  'import { match } from "ts-pattern"; export const classify = (value: number) => match(value).with(1, () => "one").otherwise(() => "other");'
+const report =
+  'console.log(JSON.stringify({ result: classify(1), compiled: !classify.toString().includes(".with("), commonjs: typeof module !== "undefined" }));'
+
+for (const type of ["module", "commonjs"]) {
+  test(`Node loader runs .ts as ${type} in a "type": "${type}" package`, () =>
+    withEntry(async (entry, directory) => {
+      await writeFile(`${directory}/package.json`, JSON.stringify({ type }))
+      await writeFile(`${directory}/child.ts`, child)
+      await writeFile(
+        entry,
+        `${
+          type === "module"
+            ? 'import { classify } from "./child";'
+            : 'const { classify } = require("./child");'
+        } ${report}`,
+      )
+      const output = execFileSync(process.execPath, [
+        "--import",
+        register,
+        entry,
+      ], { encoding: "utf8" })
+      assert.deepEqual(JSON.parse(output), {
+        result: "one",
+        compiled: true,
+        commonjs: type === "commonjs",
+      })
+    }))
+}
+
+for (
+  const [specifier, extension] of [
+    ["js", "ts"],
+    ["js", "tsx"],
+    ["jsx", "tsx"],
+    ["mjs", "mts"],
+    ["cjs", "cts"],
+  ]
+) {
+  test(`Node loader resolves ./child.${specifier} to child.${extension}`, () =>
+    withEntry(async (entry, directory) => {
+      await writeFile(`${directory}/package.json`, '{"type":"module"}')
+      await writeFile(`${directory}/child.${extension}`, child)
+      await writeFile(
+        entry,
+        `import { classify } from "./child.${specifier}"; ${report}`,
+      )
+      const output = execFileSync(process.execPath, [
+        "--import",
+        register,
+        entry,
+      ], { encoding: "utf8" })
+      assert.deepEqual(JSON.parse(output), {
+        result: "one",
+        compiled: true,
+        commonjs: false,
+      })
+    }))
+}
+
 test(
   "Deno remote package materializes its exact WASM and transforms the local entry",
   { skip: !denoAvailable },
