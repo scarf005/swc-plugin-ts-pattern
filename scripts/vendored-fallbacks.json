@@ -13,7 +13,8 @@
     "method-returnType": 1
   },
   "exhaustive-match.test.ts": {
-    "unsupported-pattern": 70
+    "unsupported-pattern": 70,
+    "unstable-argument": 1
   },
   "intersection-and-union.test.ts": {
     "unsupported-pattern": 12
@@ -51,9 +52,6 @@
   "not.test.ts": {
     "method-run": 3,
     "unsupported-pattern": 10
-  },
-  "numbers.test.ts": {
-    "unsupported-pattern": 3
   },
   "objects.test.ts": {
     "isMatching": 2,
@@ -114,6 +112,6 @@
     "unsupported-pattern": 4
   },
   "wildcards.test.ts": {
-    "unsupported-pattern": 2
+    "unsupported-pattern": 1
   }
 }

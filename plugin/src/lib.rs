@@ -2370,18 +2370,22 @@ enum PatternCall {
 
 impl TsPatternTransformer {
     /// Whether testing `pattern` can call code from the source, such as a
-    /// `P.when` predicate or an `instanceof` check.
+    /// `P.when` predicate, an `instanceof` check, or a getter or proxy trap
+    /// on the input that a property read, `in` check or iteration runs.
     fn runs_user_code(&self, pattern: &Expr) -> bool {
         let runs = |expr: &Expr| self.runs_user_code(expr);
         match self.resolve_pattern_expr(pattern) {
-            Expr::Object(object) => object.props.iter().any(|prop| {
-                prop.as_prop()
-                    .and_then(|prop| prop.as_key_value())
-                    .is_none_or(|key_value| runs(&key_value.value))
-            }),
-            Expr::Array(array) => array.elems.iter().flatten().any(|elem| runs(&elem.expr)),
+            Expr::Object(object) => !object.props.is_empty(),
+            Expr::Array(_) => true,
             Expr::Paren(paren) => runs(&paren.expr),
             Expr::Call(call) => match self.pattern_call(call) {
+                _ if matches!(
+                    self.p_call_api(call),
+                    Some(PApi::Call("array" | "set" | "map" | "record", _))
+                ) =>
+                {
+                    true
+                }
                 PatternCall::Select | PatternCall::Nested | PatternCall::Modifier => {
                     method_base(call).is_some_and(runs)
                         || call.args.iter().any(|arg| runs(&arg.expr))
