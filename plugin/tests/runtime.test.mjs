@@ -255,15 +255,9 @@ test(
         )
         const base = `http://127.0.0.1:${server.address().port}`
         const consumer = `${directory}/consumer.ts`
-        const temporaryRoot = `${directory}/cache`
         const executionOptions = {
           encoding: "utf8",
-          env: {
-            ...process.env,
-            TMPDIR: temporaryRoot,
-            TMP: temporaryRoot,
-            TEMP: temporaryRoot,
-          },
+          env: { ...process.env, XDG_CACHE_HOME: `${directory}/cache` },
         }
         await writeFile(
           consumer,
@@ -288,6 +282,7 @@ console.log(JSON.stringify(await defaultPluginPath()));
           ["run", "-A", "--config", config, consumer],
           executionOptions,
         )
+        assert.ok(JSON.parse(cachedPath).startsWith(`${directory}/cache/`))
         await writeFile(JSON.parse(cachedPath), "corrupt cache fixture")
         assert.equal(
           wasmRequests,
@@ -314,6 +309,11 @@ console.log(JSON.stringify(await defaultPluginPath()));
             args: ["argument"],
           })
         }
+        assert.equal(
+          wasmRequests,
+          6,
+          "a corrupt cache downloads again; a valid cache needs no download",
+        )
       } finally {
         await new Promise((resolve, reject) =>
           server.close((error) => error ? reject(error) : resolve())

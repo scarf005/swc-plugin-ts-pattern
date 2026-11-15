@@ -2,8 +2,8 @@
 import { transform, transformSync } from "@swc/core"
 import { createHash, randomUUID } from "node:crypto"
 import { statSync } from "node:fs"
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -11,6 +11,13 @@ const wasmUrl = new URL(
   "./target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
   import.meta.url,
 )
+
+// Per-user, so other users cannot plant compiled plugin code.
+const cacheDirectory = () =>
+  join(
+    globalThis.process?.env?.XDG_CACHE_HOME || join(homedir(), ".cache"),
+    "swc-plugin-ts-pattern",
+  )
 
 let remotePluginPath
 let remotePluginPromise
@@ -60,7 +67,26 @@ const readWasm = async (response) => {
   return bytes
 }
 
+const isWasm = (bytes) =>
+  [0, 97, 115, 109, 1, 0, 0, 0].every((byte, index) => bytes[index] === byte)
+
+const readCachedPlugin = async (path) => {
+  try {
+    return isWasm(await readFile(path)) ? path : undefined
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  }
+}
+
+// A versioned remote package never changes its WASM, so a cached copy keyed
+// by URL avoids a download on every start and works offline.
 const downloadPlugin = async () => {
+  const directory = join(cacheDirectory(), "wasm")
+  const key = createHash("sha256").update(wasmUrl.href).digest("hex")
+  const path = join(directory, `${key}.wasm.bin`)
+  remotePluginPath = await readCachedPlugin(path)
+  if (remotePluginPath) return path
   const response = await fetch(wasmUrl)
   if (!response.ok) {
     throw new Error(
@@ -68,31 +94,14 @@ const downloadPlugin = async () => {
     )
   }
   const bytes = await readWasm(response)
-  const header = [0, 97, 115, 109, 1, 0, 0, 0]
-  if (!header.every((byte, index) => bytes[index] === byte)) {
-    throw new Error(`Invalid plugin WASM: ${wasmUrl}`)
-  }
-  const digest = createHash("sha256").update(bytes).digest("hex")
-  const directory = join(tmpdir(), "swc-plugin-ts-pattern", "wasm")
-  const path = join(directory, `${digest}.wasm.bin`)
+  if (!isWasm(bytes)) throw new Error(`Invalid plugin WASM: ${wasmUrl}`)
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  let validCache = false
+  const temporary = `${path}.${randomUUID()}`
   try {
-    if ((await stat(path)).size === bytes.length) {
-      const cached = await readFile(path)
-      validCache = createHash("sha256").update(cached).digest("hex") === digest
-    }
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error
-  }
-  if (!validCache) {
-    const temporary = `${path}.${randomUUID()}`
-    try {
-      await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 })
-      await rename(temporary, path)
-    } finally {
-      await rm(temporary, { force: true })
-    }
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 })
+    await rename(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
   }
   remotePluginPath = path
   return path
@@ -109,11 +118,7 @@ export const defaultPluginPath = async () => {
 
 const cacheRootFor = (pluginPath) => {
   const { mtimeMs, size } = statSync(pluginPath)
-  return join(
-    tmpdir(),
-    "swc-plugin-ts-pattern",
-    `${size}-${Math.trunc(mtimeMs)}`,
-  )
+  return join(cacheDirectory(), "swc", `${size}-${Math.trunc(mtimeMs)}`)
 }
 
 const parserFor = (filename) => ({
