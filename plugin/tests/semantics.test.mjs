@@ -1506,6 +1506,31 @@ test("later instanceOf arms read classes after earlier arms reassign them", asyn
     import { match, P } from "ts-pattern";
     class A {}
     class B {}
+    export const run = () => {
+      const log = [];
+      globalThis.TsPatternGlobal = B;
+      const changed = match(new A())
+        .with(P.when(() => { globalThis.TsPatternGlobal = A; return false; }), () => "x")
+        .with(P.instanceOf(TsPatternGlobal), () => "global")
+        .otherwise(() => "other");
+      let missing;
+      try {
+        missing = match(1)
+          .with(P.when(() => { log.push("guard"); return false; }), () => "x")
+          .with(P.instanceOf(TsPatternMissing), () => "missing")
+          .otherwise(() => "other");
+      } catch (error) { missing = error.constructor.name; }
+      delete globalThis.TsPatternGlobal;
+      return [changed, missing, log];
+    };
+  `,
+    ["global", "ReferenceError", ["guard"]],
+  )
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    class A {}
+    class B {}
     export const run = () =>
       match(new A())
         .with(P.when(() => { B = A; return false; }), () => { return "x"; })
