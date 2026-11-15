@@ -357,13 +357,16 @@ impl TsPatternTransformer {
     }
 
     /// Whether evaluating `expr` earlier gives the same value and runs no code:
-    /// literals, functions, module constants, classes and globals.
+    /// literals, functions, unchanged constants and classes, and the read-only
+    /// globals `undefined`, `NaN` and `Infinity`. Other globals can be missing
+    /// or change in an earlier arm.
     fn is_stable_value(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Lit(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
             Expr::Paren(paren) => self.is_stable_value(&paren.expr),
             Expr::Ident(ident) => {
-                ident.ctxt == self.unresolved_ctxt
+                (ident.ctxt == self.unresolved_ctxt
+                    && matches!(&*ident.sym, "undefined" | "NaN" | "Infinity"))
                     || self
                         .stable_bindings
                         .get(&ident.to_id())
@@ -4614,6 +4617,7 @@ const result = match(input).with(P.record(P.string.select(), P.number), (keys) =
     fn prepares_statement_matches_as_constants_with_inline_handlers() {
         let output = transform(
             r#"import { match, P } from "ts-pattern";
+const handle = (value: unknown) => value;
 export const run = (input: unknown) => match(input).with(P.instanceOf(Date), () => "date").otherwise(handle);"#,
         );
 
