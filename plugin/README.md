@@ -13,6 +13,8 @@ const label = match(input)
 
 The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserving input evaluation and callback arguments. Unsupported chains retain the original ts-pattern runtime.
 
+![Playground with the literals example: TypeScript source, ts-pattern output and plugin output](https://raw.githubusercontent.com/scarf005/swc-plugin-ts-pattern/main/docs/playground.webp)
+
 ## Install
 
 ```sh
