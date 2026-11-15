@@ -51,6 +51,8 @@ const chains = {
     'match(input).with(P.instanceOf(Derived), () => "derived").with(P.instanceOf(Base), () => "base").otherwise(() => 0)',
   intersection:
     'match(input).with(P.intersection({ a: P.number }, { b: P.string }), () => 1).with({ c: P.intersection(P.any, P.when((v) => (log.push("when c"), v !== 1)), P.select()) }, (c) => c).with(P.intersection({ a: P.select("x") }, { b: P.select("y") }), (s) => s).with(P.number.and(P.select()), (n) => n).otherwise(() => 0)',
+  unionSelections:
+    'match(input).with({ a: P.union({ b: P.when((v) => (log.push("when b"), v !== 1)), c: P.select("x") }, { c: P.select("x") }), kind: P.select("y") }, (s) => s).with(P.union({ a: P.select() }, P.array(P.select())), (v) => v).with({ c: P.optional({ b: P.select() }).or({ a: P.select() }) }, (v) => v).otherwise(() => 0)',
   exhaustive:
     'match(input).with(P.number, () => "number").with(P.string, () => "string").with({ kind: P.select() }, (k) => k).exhaustive()',
   run: 'match(input).with(P.number, () => "number").with({ a: P.select() }, (a) => a).run()',
