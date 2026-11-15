@@ -7,7 +7,7 @@ use swc_core::{
     common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        utils::private_ident,
+        utils::{prepend_stmts, private_ident},
         visit::{Visit, VisitMut, VisitMutWith, VisitWith},
     },
     plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
@@ -2946,9 +2946,8 @@ fn break_stmt() -> Stmt {
 
 /// Declares `temps` at the start of `body`.
 fn declare_temps(temps: Vec<Ident>, mut body: BlockStmt) -> BlockStmt {
-    if !temps.is_empty() {
-        body.stmts.splice(0..0, temps.into_iter().map(let_decl));
-    }
+    // After directives such as `"use strict"`, which must stay first.
+    prepend_stmts(&mut body.stmts, temps.into_iter().map(let_decl));
     body
 }
 
