@@ -1371,3 +1371,40 @@ test("later patterns are built after earlier handlers run", async () => {
     [1, 2, "boom", ["make 1", "h1", "make 2", "make 1", "make 2", "h2"]],
   )
 })
+
+test("records under other patterns give their selections, not their result", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const optional = (input) =>
+      match(input).with({ r: P.optional(P.record(P.string, P.select())) }, (s) => s).otherwise(() => "other");
+    const nested = (input) =>
+      match(input).with(P.record(P.string, P.record(P.string, P.select())), (s) => s).otherwise(() => "other");
+    export const run = () => [optional({}), optional({ r: {} }), optional({ r: { a: 1 } }), nested({ a: {} }), nested({ a: { b: 1 } })];
+  `,
+    [undefined, { r: {} }, [1], { a: {} }, [[1]]],
+  )
+})
+
+test("later arm arguments read bindings after earlier arms change them", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      let handler = () => "old";
+      let prefix = "a";
+      const log = [];
+      const changed = match("bc")
+        .with(P.when(() => { handler = () => "new"; prefix = "b"; return false; }), () => "x")
+        .with(P.string.startsWith(prefix), handler)
+        .otherwise(() => "other");
+      const defaults = match({})
+        .with({ a: P.optional(P.select()) }, (s = log.push("default")) => "x")
+        .with(P.when((log.push("build"), () => true)), () => "y")
+        .otherwise(() => "other");
+      return [changed, defaults, log];
+    };
+  `,
+    ["new", "x", ["default", "build"]],
+  )
+})
