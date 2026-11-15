@@ -509,7 +509,12 @@ export const App = () => (
     <section class="toolbar">
       <h1>Playground</h1>
       <div class="controls">
-        <select value={selectedPattern.value} onChange={onPatternChange} onWheel={onPatternWheel}>
+        <select
+          aria-label="Example"
+          value={selectedPattern.value}
+          onChange={onPatternChange}
+          onWheel={onPatternWheel}
+        >
           {selectedPattern.value === "custom" && (
             <option value="custom" hidden>
               Custom
@@ -521,7 +526,7 @@ export const App = () => (
             </option>
           ))}
         </select>
-        <select value={theme.value} onChange={onThemeChange}>
+        <select aria-label="Theme" value={theme.value} onChange={onThemeChange}>
           <option value="white">White</option>
           <option value="dark">Dark</option>
         </select>
