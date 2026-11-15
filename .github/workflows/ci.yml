@@ -14,7 +14,8 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    # Playwright 1.60 cannot install Chromium dependencies on ubuntu 26.04.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { submodules: recursive }
@@ -46,9 +47,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             plugin/target
-          key: cargo-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'plugin/Cargo.lock') }}
+          key: cargo-ubuntu-24.04-${{ hashFiles('rust-toolchain.toml', 'plugin/Cargo.lock') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-ubuntu-24.04-
 
       - run: npm ci
 
