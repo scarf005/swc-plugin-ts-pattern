@@ -29,7 +29,13 @@ const tsPatternRequireAliases = (source: string) =>
     /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(["'](?:npm:)?ts-pattern["']\);/g,
   )].map(([, alias]) => alias);
 
-const residualTsPatternMatchCall = (source: string) => {
+// The plugin keeps `throw match(input).exhaustive()` as the no-match fallback,
+// so ts-pattern throws its own NonExhaustiveError.
+const withoutExhaustiveFallbacks = (source: string) =>
+  source.replace(/throw \(0, [A-Za-z_$][\w$]*\.match\)\([A-Za-z_$][\w$]*\)\.exhaustive\(\);/g, "");
+
+const residualTsPatternMatchCall = (code: string) => {
+  const source = withoutExhaustiveFallbacks(code);
   const directMatch = /require\(["'](?:npm:)?ts-pattern["']\)\.match\s*\(/.exec(
     source,
   );
