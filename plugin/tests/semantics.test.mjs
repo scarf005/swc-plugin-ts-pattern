@@ -1,40 +1,6 @@
 import assert from "node:assert/strict"
-import { createRequire } from "node:module"
 import { test } from "node:test"
-import { transform } from "@swc/core"
-import { transformTsPattern } from "../transform.mjs"
-
-const require = createRequire(import.meta.url)
-// Every ts-pattern 5.x minor, installed as `ts-pattern-5.<minor>` aliases.
-const versions = Object.keys(require("../package.json").devDependencies).filter((name) =>
-  name.startsWith("ts-pattern-"),
-)
-
-const compile = async (source, plugin) => {
-  const options = {
-    filename: "semantics.ts",
-    sourceMaps: false,
-    jsc: { parser: { syntax: "typescript" }, target: "es2022" },
-    module: { type: "commonjs" },
-  }
-  const { code } = plugin
-    ? await transformTsPattern(source, {
-        sourceMaps: false,
-        swcOptions: options,
-      })
-    : await transform(source, options)
-  return code
-}
-
-const load = (code, version) => {
-  const module = { exports: {} }
-  new Function("require", "module", "exports", code)(
-    (id) => require(id === "ts-pattern" ? version : id),
-    module,
-    module.exports,
-  )
-  return module.exports.run
-}
+import { compile, load, require, versions } from "./harness.mjs"
 
 const evaluate = async (source, plugin, version = versions.at(-1)) => {
   const code = await compile(source, plugin)
