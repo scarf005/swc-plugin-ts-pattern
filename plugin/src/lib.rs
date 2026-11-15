@@ -4,7 +4,7 @@ use std::{
 };
 
 use swc_core::{
-    common::{BytePos, EqIgnoreSpan, SyntaxContext, DUMMY_SP},
+    common::{BytePos, EqIgnoreSpan, Span, Spanned, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
         utils::{prepend_stmts, private_ident},
@@ -34,8 +34,8 @@ struct TsPatternTransformer {
     const_bindings: HashMap<Id, Expr>,
     mutated_bindings: HashSet<Id>,
     /// `const`, class and function names that nothing reassigns, with the
-    /// source position after which they hold their value.
-    stable_bindings: HashMap<Id, BytePos>,
+    /// source regions that run only after they hold their value.
+    stable_bindings: HashMap<Id, Vec<Span>>,
     /// Temporaries that the current arm's tests assign; `arm_parts` declares
     /// them.
     pending_temps: RefCell<Vec<Ident>>,
@@ -327,7 +327,7 @@ impl TsPatternTransformer {
     }
 
     /// Records `const`, class and function names that nothing reassigns, with
-    /// the source position after which they are set.
+    /// the source regions that run only after they are set.
     fn collect_stable_bindings(&mut self, module: &Module) {
         let mut writes = BindingWrites::default();
         module.visit_with(&mut writes);
@@ -367,7 +367,11 @@ impl TsPatternTransformer {
                     || self
                         .stable_bindings
                         .get(&ident.to_id())
-                        .is_some_and(|set| ident.span.lo >= *set)
+                        .is_some_and(|regions| {
+                            regions.iter().any(|region| {
+                                region.lo <= ident.span.lo && ident.span.hi <= region.hi
+                            })
+                        })
                     || (self.const_bindings.contains_key(&ident.to_id())
                         && !self.mutated_bindings.contains(&ident.to_id()))
             }
@@ -2138,41 +2142,113 @@ fn block_contains_effect(block: &BlockStmt) -> bool {
     detector.effect
 }
 
-/// Collects `const`, class and function declarations, and every name that an
-/// assignment or update writes.
+/// Collects `const`, class and function declarations with the source regions
+/// that run only after they are set, and every name that a write can rebind.
 #[derive(Default)]
 struct BindingWrites {
-    declared: HashMap<Id, BytePos>,
+    declared: HashMap<Id, Vec<Span>>,
     assigned: HashSet<Id>,
 }
 
+impl BindingWrites {
+    /// Lets a `const` or class name be read in the later statements of its own
+    /// list, except hoisted function declarations, which can run earlier.
+    fn declare_in_list<'a>(&mut self, items: &[(Option<&'a Decl>, bool, Span)]) {
+        for (index, (decl, _, _)) in items.iter().enumerate() {
+            let names: Vec<Id> = match decl {
+                Some(Decl::Class(class)) => vec![class.ident.to_id()],
+                Some(Decl::Var(var)) if var.kind == VarDeclKind::Const => var
+                    .decls
+                    .iter()
+                    .filter_map(|decl| match &decl.name {
+                        Pat::Ident(ident) => Some(ident.id.to_id()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            let regions: Vec<Span> = items[index + 1..]
+                .iter()
+                .filter(|(_, hoisted, _)| !hoisted)
+                .map(|(_, _, span)| *span)
+                .collect();
+            for name in names {
+                self.declared.insert(name, regions.clone());
+            }
+        }
+    }
+}
+
 impl Visit for BindingWrites {
-    fn visit_class_decl(&mut self, class: &ClassDecl) {
-        self.declared
-            .insert(class.ident.to_id(), class.class.span.hi);
-        class.visit_children_with(self);
+    fn visit_module_items(&mut self, items: &[ModuleItem]) {
+        let items_info: Vec<_> = items
+            .iter()
+            .map(|item| {
+                let decl = match item {
+                    ModuleItem::Stmt(Stmt::Decl(decl))
+                    | ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl { decl, .. })) => {
+                        Some(decl)
+                    }
+                    _ => None,
+                };
+                let hoisted = matches!(decl, Some(Decl::Fn(_)))
+                    || matches!(
+                        item,
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(ExportDefaultDecl {
+                            decl: DefaultDecl::Fn(_),
+                            ..
+                        }))
+                    );
+                (decl, hoisted, item.span())
+            })
+            .collect();
+        self.declare_in_list(&items_info);
+        items.visit_children_with(self);
+    }
+
+    fn visit_stmts(&mut self, stmts: &[Stmt]) {
+        let items_info: Vec<_> = stmts
+            .iter()
+            .map(|stmt| {
+                let decl = match stmt {
+                    Stmt::Decl(decl) => Some(decl),
+                    _ => None,
+                };
+                (decl, matches!(decl, Some(Decl::Fn(_))), stmt.span())
+            })
+            .collect();
+        self.declare_in_list(&items_info);
+        stmts.visit_children_with(self);
     }
 
     // Function declarations are set before any code in their scope runs.
     fn visit_fn_decl(&mut self, function: &FnDecl) {
-        self.declared.insert(function.ident.to_id(), BytePos(0));
+        self.declared.insert(
+            function.ident.to_id(),
+            vec![Span::new(BytePos(0), BytePos(u32::MAX))],
+        );
         function.visit_children_with(self);
     }
 
+    // `var` can redeclare a function name and assign it.
     fn visit_var_decl(&mut self, var: &VarDecl) {
-        if var.kind == VarDeclKind::Const {
+        if var.kind != VarDeclKind::Const {
             for decl in &var.decls {
-                if let Pat::Ident(ident) = &decl.name {
-                    self.declared.insert(ident.id.to_id(), decl.span.hi);
-                }
+                decl.name.visit_with(&mut BindingNames(&mut self.assigned));
             }
         }
         var.visit_children_with(self);
     }
 
+    fn visit_for_head(&mut self, head: &ForHead) {
+        if let ForHead::Pat(pat) = head {
+            pat.visit_with(&mut BindingNames(&mut self.assigned));
+        }
+        head.visit_children_with(self);
+    }
+
     fn visit_assign_target(&mut self, target: &AssignTarget) {
-        let mut bindings = BindingNames(&mut self.assigned);
-        target.visit_with(&mut bindings);
+        target.visit_with(&mut BindingNames(&mut self.assigned));
     }
 
     fn visit_update_expr(&mut self, update: &UpdateExpr) {
