@@ -269,6 +269,29 @@ test("snapshots the match input before a predicate can mutate its binding", asyn
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+// P.when(f) has no chain methods and P.array(x) has no and/or, so ts-pattern
+// throws a TypeError while it builds the pattern, e.g. on P.when(f).select().
+for (const pattern of [
+  "{ a: P.when(() => true).select() }",
+  "P.when(() => true).optional()",
+  "P.array(P.number).and(P.any)",
+  "P.array(P.number).or(P.any)",
+]) {
+  test(`${pattern} throws like ts-pattern`, async () => {
+    const source = `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      try {
+        return match({ a: 1 }).with(${pattern}, () => "matched").otherwise(() => "other");
+      } catch (error) {
+        return error.constructor.name;
+      }
+    };
+  `
+    await assertEquivalent(source, "TypeError")
+  })
+}
+
 test("reads wildcard properties once in pattern order", async () => {
   const code = await assertEquivalent(
     `
