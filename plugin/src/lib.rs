@@ -2092,6 +2092,15 @@ impl TsPatternTransformer {
             .iter()
             .map(Option::as_ref)
             .collect::<Option<Vec<_>>>()?;
+        // Any iteration of a `P.array` pattern, also in another module, makes
+        // it variadic, so only a fresh `P.array(...)` is a single element.
+        if elems.iter().any(|elem| {
+            elem.spread.is_none()
+                && matches!(&*elem.expr, Expr::Ident(_))
+                && matches!(self.p_api(&elem.expr), Some(PApi::Call("array", _)))
+        }) {
+            return None;
+        }
         let spreads = elems.iter().filter(|elem| elem.spread.is_some()).count();
         let Some(middle) = elems.iter().position(|elem| elem.spread.is_some()) else {
             let base = and(
