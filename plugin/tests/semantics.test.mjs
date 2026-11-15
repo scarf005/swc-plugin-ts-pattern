@@ -292,6 +292,26 @@ for (const pattern of [
   })
 }
 
+test("evaluates later arm arguments after getters of earlier arms", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const log = [];
+    const handler = (value) => (log.push("argument"), value);
+    export const run = () => {
+      log.length = 0;
+      const input = { get a() { log.push("get a"); return 0; }, b: [] };
+      const result = match(input)
+        .with({ a: 1 }, () => "a")
+        .with({ b: [] }, handler(() => "b"))
+        .otherwise(() => 0);
+      return [result, log];
+    };
+  `,
+    ["b", ["get a", "argument"]],
+  )
+})
+
 test("reads wildcard properties once in pattern order", async () => {
   const code = await assertEquivalent(
     `
