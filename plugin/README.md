@@ -59,9 +59,9 @@ Reasons:
 
 - `unsupported-pattern`: the plugin cannot compile a pattern or arm of the chain.
 - `unstable-argument`: a later arm reads a value that code in an earlier arm can change.
-- `no-terminal`: the chain does not end in `.otherwise()` or `.exhaustive()`.
-- `exhaustive-handler`: `.exhaustive()` gets a handler.
-- `method-<name>`: the chain calls the method `<name>`, for example `method-run`.
+- `no-terminal`: the chain does not end in `.otherwise()`, `.exhaustive()` or `.run()`.
+- `exhaustive-handler`: `.exhaustive()` gets a spread, more than one argument, or a handler that code in the chain can change.
+- `method-<name>`: the chain calls the method `<name>`, for example `method-narrow`.
 - `isMatching`: the plugin cannot compile this `isMatching` call.
 
 ## Run TypeScript directly
@@ -375,7 +375,7 @@ RUN  v5.1.0 web
 
 ## Supported input
 
-The transformer handles chains that start from `match(value)` imported from `ts-pattern` and end in `.otherwise(handler)` or `.exhaustive()`. It also compiles `isMatching(pattern)` and `isMatching(pattern, value)` when the pattern holds only literals and side-effect-free inline callbacks and `value` is an identifier or literal.
+The transformer handles chains that start from `match(value)` imported from `ts-pattern` and end in `.otherwise(handler)`, `.exhaustive()`, `.exhaustive(handler)` or `.run()`. When no arm matches, `.exhaustive()` and `.run()` call the ts-pattern runtime with the input, so it throws its own error. It also compiles `isMatching(pattern)` and `isMatching(pattern, value)` when the pattern holds only literals and side-effect-free inline callbacks and `value` is an identifier or literal.
 
 Supported patterns:
 
@@ -388,4 +388,4 @@ Supported patterns:
 
 Supported selection patterns include `P.select` and array/record selection aggregation. Record key selections preserve numeric coercion and original-key matching. Selections named `__proto__`, and record selections using inherited `Object.prototype` names such as `constructor` or `toString`, retain the runtime to preserve its selection and error behavior. The plugin also handles `.when`, `P.set`, `P.map`, `P.record`, `P.intersection`, and common string/number refinements.
 
-Unsupported chains, custom matcher objects, `.returnType`, and unsupported combinations are left unchanged to preserve runtime behavior. Keep ts-pattern installed even when most expressions compile.
+Unsupported chains, custom matcher objects, `.narrow()`, and unsupported combinations are left unchanged to preserve runtime behavior. Keep ts-pattern installed even when most expressions compile.

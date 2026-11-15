@@ -47,6 +47,11 @@ const chains = {
     "match(input).with(P.intersection({ a: P.number }, { b: P.string }), () => 1).otherwise(() => 0)",
   exhaustive:
     'match(input).with(P.number, () => "number").with(P.string, () => "string").with({ kind: P.select() }, (k) => k).exhaustive()',
+  run: 'match(input).with(P.number, () => "number").with({ a: P.select() }, (a) => a).run()',
+  exhaustiveHandler:
+    'match(input).returnType().with(P.string, (s) => s).with({ kind: "a" }, () => 1).exhaustive((v) => (log.push("unmatched"), typeof v))',
+  argument:
+    'String(match(input).with(P.number, (n) => n + 1).with({ a: 1 }, () => "a").exhaustive())',
 }
 
 const key = fc.constantFrom("kind", "a", "b", "c", "value", "0", "1")

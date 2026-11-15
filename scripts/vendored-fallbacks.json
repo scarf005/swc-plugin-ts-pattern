@@ -3,35 +3,26 @@
     "unsupported-pattern": 7
   },
   "branded-nominal-types.test.ts": {
-    "unsupported-pattern": 2
+    "unsupported-pattern": 1
   },
   "chainable.test.ts": {
     "unsupported-pattern": 3
   },
-  "exhaustive-fallback.test.ts": {
-    "exhaustive-handler": 2,
-    "method-returnType": 1
-  },
   "exhaustive-match.test.ts": {
-    "unsupported-pattern": 70,
+    "unsupported-pattern": 29,
     "unstable-argument": 1
   },
   "intersection-and-union.test.ts": {
-    "unsupported-pattern": 12
+    "unsupported-pattern": 9
   },
   "is-matching.test.ts": {
     "isMatching": 4
   },
-  "large-exhaustive.test.ts": {
-    "unsupported-pattern": 3,
-    "method-returnType": 1
-  },
   "lists.test.ts": {
-    "method-run": 1,
     "no-terminal": 1
   },
   "maps.test.ts": {
-    "method-run": 1
+    "unsupported-pattern": 1
   },
   "matcher-protocol.test.ts": {
     "isMatching": 1,
@@ -39,9 +30,8 @@
     "no-terminal": 2
   },
   "multiple-patterns.test.ts": {
-    "method-run": 3,
     "no-terminal": 1,
-    "unsupported-pattern": 6
+    "unsupported-pattern": 3
   },
   "narrow.test.ts": {
     "method-narrow": 2
@@ -50,22 +40,15 @@
     "unsupported-pattern": 11
   },
   "not.test.ts": {
-    "method-run": 3,
-    "unsupported-pattern": 10
+    "unsupported-pattern": 8
   },
   "objects.test.ts": {
     "isMatching": 2,
     "unsupported-pattern": 3
   },
-  "optional-props.test.ts": {
-    "method-run": 1
-  },
   "optional.test.ts": {
     "no-terminal": 4,
     "unsupported-pattern": 3
-  },
-  "output-type.test.ts": {
-    "method-run": 5
   },
   "primitive-values.test.ts": {
     "unsupported-pattern": 1
@@ -77,41 +60,28 @@
     "unsupported-pattern": 1
   },
   "record.test.ts": {
-    "unsupported-pattern": 6,
+    "unsupported-pattern": 2,
     "no-terminal": 1
   },
-  "return-type.test.ts": {
-    "method-returnType": 5
-  },
   "select.test.ts": {
-    "method-run": 9,
-    "unsupported-pattern": 5
-  },
-  "sets.test.ts": {
-    "method-run": 1
+    "unsupported-pattern": 12
   },
   "tuples.test.ts": {
-    "method-run": 2,
-    "unsupported-pattern": 3
+    "unsupported-pattern": 2
   },
   "type-error.test.ts": {
-    "unsupported-pattern": 6,
-    "unstable-argument": 1
+    "unstable-argument": 1,
+    "unsupported-pattern": 1
   },
   "types.test.ts": {
     "no-terminal": 22,
-    "method-run": 1,
-    "unsupported-pattern": 2
+    "unsupported-pattern": 3
   },
   "variadic-tuples.test.ts": {
     "unsupported-pattern": 47,
     "no-terminal": 2
   },
   "when.test.ts": {
-    "method-run": 1,
     "unsupported-pattern": 4
-  },
-  "wildcards.test.ts": {
-    "unsupported-pattern": 1
   }
 }

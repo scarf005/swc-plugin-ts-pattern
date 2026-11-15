@@ -85,7 +85,10 @@ struct TsPatternTransformer {
 struct MatchChain {
     input: Box<Expr>,
     arms: Vec<MatchArm>,
-    fallback: Fallback,
+    /// Runs with the input when no arm matches: the `otherwise` handler, or
+    /// for `exhaustive` and `run`, a handler that calls them on ts-pattern
+    /// with no arms, so ts-pattern throws its own error or runs its handler.
+    fallback: Box<Expr>,
 }
 
 #[derive(Clone)]
@@ -94,13 +97,6 @@ struct MatchArm {
     patterns: Vec<Box<Expr>>,
     guard: Option<Box<Expr>>,
     handler: Box<Expr>,
-}
-
-#[derive(Clone)]
-enum Fallback {
-    Otherwise(Box<Expr>),
-    /// `.exhaustive()` on a chain started by this `match` callee.
-    Exhaustive(Box<Expr>),
 }
 
 /// How `lower_match` handled an expression.
@@ -328,14 +324,17 @@ impl TsPatternTransformer {
     /// Why the chain `expr`, whose methods are `methods` from the last, stays
     /// on the runtime.
     fn fallback_reason(&self, expr: &Expr, methods: &[(&str, usize)]) -> String {
-        if let Some((method, _)) = methods
-            .iter()
-            .find(|(method, _)| !matches!(*method, "with" | "when" | "otherwise" | "exhaustive"))
-        {
+        if let Some((method, _)) = methods.iter().find(|(method, _)| {
+            !matches!(
+                *method,
+                "with" | "when" | "otherwise" | "exhaustive" | "run" | "returnType"
+            )
+        }) {
             return format!("method-{method}");
         }
         match methods.first() {
-            Some(("exhaustive", 0) | ("otherwise", 1)) => {}
+            Some(("exhaustive" | "run", 0) | ("otherwise", 1)) => {}
+            Some(("exhaustive", 1)) if self.parse_match_chain(expr).is_some() => {}
             Some(("exhaustive", _)) => return "exhaustive-handler".into(),
             _ => return "no-terminal".into(),
         }
@@ -548,8 +547,14 @@ impl TsPatternTransformer {
         let call = as_call(expr)?;
         let (method, mut receiver) = as_method_call(call)?;
         let fallback = match (method, call.args.as_slice()) {
-            ("otherwise", [handler]) => Some(&handler.expr),
-            ("exhaustive", []) => None,
+            ("otherwise", [_]) => None,
+            ("exhaustive" | "run", []) => Some(vec![]),
+            // ts-pattern reads the handler after the arms run.
+            ("exhaustive", [handler])
+                if handler.spread.is_none() && self.is_stable_value(&handler.expr) =>
+            {
+                Some(call.args.clone())
+            }
             _ => return None,
         };
 
@@ -564,7 +569,10 @@ impl TsPatternTransformer {
                 break (callee, &input.expr);
             }
             let (method, next) = as_method_call(call)?;
-            arm_calls.push((method, call));
+            // `returnType()` only changes types and returns the matcher.
+            if !(method == "returnType" && call.args.is_empty()) {
+                arm_calls.push((method, call));
+            }
             receiver = next;
         };
         if arm_calls.is_empty() {
@@ -580,13 +588,24 @@ impl TsPatternTransformer {
             })
             .collect::<Option<_>>()?;
 
+        let fallback = match fallback {
+            None => call.args[0].expr.clone(),
+            Some(args) => {
+                let value = private_ident!("_tsPatternValue");
+                let runtime = call_expr(
+                    member_expr(call_expr(*callee.clone(), vec![ident_expr(&value)]), method),
+                    args.into_iter().map(|arg| *arg.expr).collect(),
+                );
+                Box::new(arrow_expr(
+                    vec![Pat::Ident(value.into())],
+                    BlockStmtOrExpr::Expr(Box::new(runtime)),
+                ))
+            }
+        };
         Some(MatchChain {
             input: input.clone(),
             arms,
-            fallback: fallback.map_or_else(
-                || Fallback::Exhaustive(callee.clone()),
-                |handler| Fallback::Otherwise(handler.clone()),
-            ),
+            fallback,
         })
     }
 
@@ -633,7 +652,7 @@ impl TsPatternTransformer {
                 guard: None,
                 handler: constant(true),
             }],
-            fallback: Fallback::Otherwise(constant(false)),
+            fallback: constant(false),
         };
         if needs_prepared_expression(self, &chain) {
             return None;
@@ -805,15 +824,12 @@ impl TsPatternTransformer {
             });
         }
         let start = args.len();
-        let fallback = match chain.fallback {
-            Fallback::Otherwise(handler) => Fallback::Otherwise(prepare_callback(
-                handler,
-                "_tsPatternOtherwise",
-                &mut params,
-                &mut args,
-            )),
-            fallback => fallback,
-        };
+        let fallback = prepare_callback(
+            chain.fallback,
+            "_tsPatternOtherwise",
+            &mut params,
+            &mut args,
+        );
         if reorders(quiet, &args[start..]) {
             return None;
         }
@@ -847,7 +863,7 @@ impl TsPatternTransformer {
     /// the parameters of an immediately invoked arrow.
     fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
         let (bindings, chain) = self.prepare_chain(chain)?;
-        if self.can_hoist() && matches!(chain.fallback, Fallback::Otherwise(_)) {
+        if self.can_hoist() {
             // `(input = ..., value = ..., test ? ... : ...)` evaluates in the
             // same order as the arrow's arguments.
             let body = self.compile_ternary_chain(chain, true)?;
@@ -862,17 +878,7 @@ impl TsPatternTransformer {
                 exprs,
             })));
         }
-        let body = match chain.fallback {
-            Fallback::Otherwise(_) => {
-                BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain, true)?))
-            }
-            fallback => BlockStmtOrExpr::BlockStmt(block_stmt(self.compile_body(
-                &Sink::Return,
-                &MatchInputs::new(*chain.input),
-                chain.arms,
-                fallback,
-            )?)),
-        };
+        let body = BlockStmtOrExpr::Expr(Box::new(self.compile_ternary_chain(chain, true)?));
         let (params, args) = bindings
             .into_iter()
             .map(|(ident, value)| (Pat::Ident(ident.into()), value))
@@ -932,7 +938,7 @@ impl TsPatternTransformer {
         sink: &Sink,
         inputs: &MatchInputs,
         arms: Vec<MatchArm>,
-        fallback: Fallback,
+        fallback: Box<Expr>,
     ) -> Option<Vec<Stmt>> {
         let mut stmts = Vec::new();
         let mut branches = Vec::with_capacity(arms.len());
@@ -948,19 +954,8 @@ impl TsPatternTransformer {
         Some(stmts)
     }
 
-    fn fallback_stmt(&mut self, sink: &Sink, fallback: Fallback, input: Expr) -> Stmt {
-        match fallback {
-            Fallback::Otherwise(handler) => sink.deliver(handler_result(handler, vec![input])),
-            // ts-pattern throws its own error: `NonExhaustiveError` since 5.3,
-            // a plain `Error` before.
-            Fallback::Exhaustive(callee) => Stmt::Throw(ThrowStmt {
-                span: DUMMY_SP,
-                arg: Box::new(call_expr(
-                    member_expr(call_expr(*callee, vec![input]), "exhaustive"),
-                    vec![],
-                )),
-            }),
-        }
+    fn fallback_stmt(&mut self, sink: &Sink, fallback: Box<Expr>, input: Expr) -> Stmt {
+        sink.deliver(handler_result(fallback, vec![input]))
     }
 
     /// Lowers matches that initialize a declaration or are returned as
@@ -1066,15 +1061,12 @@ impl TsPatternTransformer {
     /// them in the enclosing function or, with `allow_arrows`, in an
     /// immediately invoked arrow; otherwise lowering fails.
     fn compile_ternary_chain(&mut self, chain: MatchChain, allow_arrows: bool) -> Option<Expr> {
-        if !can_inline_input(&chain.input) || !matches!(chain.fallback, Fallback::Otherwise(_)) {
+        if !can_inline_input(&chain.input) {
             return None;
         }
 
         let input = *chain.input;
-        let Fallback::Otherwise(fallback) = chain.fallback else {
-            return None;
-        };
-        let mut expression = handler_result(fallback, vec![input.clone()]);
+        let mut expression = handler_result(chain.fallback, vec![input.clone()]);
         // Each function activation has its own temporaries, so re-entrant
         // matches cannot overwrite them.
         let hoist = allow_arrows && self.can_hoist();
@@ -2157,7 +2149,7 @@ fn needs_prepared_expression(transformer: &TsPatternTransformer, chain: &MatchCh
                 .as_ref()
                 .is_some_and(|guard| !is_function_expr(guard) || guard_requires_snapshot(guard))
             || handler_needs_preparation(&arm.handler)
-    }) || matches!(&chain.fallback, Fallback::Otherwise(handler) if handler_needs_preparation(handler))
+    }) || handler_needs_preparation(&chain.fallback)
 }
 
 fn guard_requires_snapshot(guard: &Expr) -> bool {
@@ -3293,14 +3285,16 @@ fn collect_pat_bindings(param: &Pat, value: Expr, bindings: &mut Vec<(Id, Expr)>
 }
 
 /// Substituting arguments delays their evaluation to each use, which is
-/// unobservable only when the body runs no code before them and nested
-/// functions do not capture them. An identifier or literal may be read any
+/// unobservable only when the body runs no code before reading them and
+/// nested functions do not capture them. A call runs after its callee and
+/// arguments, so `match(v).exhaustive()` may read `v`. An identifier or literal may be read any
 /// number of times; other arguments must be read exactly once.
 fn is_simple_inline_body(body: &Expr, bindings: &[(Id, Expr)]) -> bool {
     let mut usage = BindingUsage {
         bindings,
         counts: vec![0; bindings.len()],
         unsafe_body: false,
+        ran_code: false,
         function_depth: 0,
     };
     body.visit_with(&mut usage);
@@ -3318,6 +3312,8 @@ struct BindingUsage<'a> {
     bindings: &'a [(Id, Expr)],
     counts: Vec<usize>,
     unsafe_body: bool,
+    /// Whether a call or `new` already ran before the current read.
+    ran_code: bool,
     function_depth: usize,
 }
 
@@ -3325,7 +3321,7 @@ impl BindingUsage<'_> {
     fn count(&mut self, ident: &Ident) {
         let id = ident.to_id();
         if let Some(index) = self.bindings.iter().position(|(binding, _)| *binding == id) {
-            if self.function_depth > 0 {
+            if self.function_depth > 0 || self.ran_code {
                 self.unsafe_body = true;
             }
             self.counts[index] += 1;
@@ -3348,6 +3344,11 @@ impl Visit for BindingUsage<'_> {
                 self.function_depth += 1;
                 expr.visit_children_with(self);
                 self.function_depth -= 1;
+                return;
+            }
+            Expr::Call(_) | Expr::New(_) if self.function_depth == 0 => {
+                expr.visit_children_with(self);
+                self.ran_code = true;
                 return;
             }
             _ if self.function_depth == 0 && runs_code(expr) => self.unsafe_body = true,
@@ -4049,7 +4050,7 @@ export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img
 
         assert!(output.contains("=>{"), "{output}");
         assert!(
-            output.contains("throw match(_tsPatternInput).exhaustive()"),
+            output.contains("return match(_tsPatternInput).exhaustive()"),
             "{output}"
         );
         assert!(!output.contains("match(result).with"), "{output}");
@@ -4185,14 +4186,13 @@ const result = match(input).with(P.when((value) => value > 0 && value < 10), () 
     }
 
     #[test]
-    fn keeps_p_when_predicate_call_that_runs_code() {
+    fn inlines_p_when_predicate_call_after_its_argument() {
         let output = transform(
             r#"import { match, P } from "ts-pattern";
 const result = match(input).with(P.when((value) => check(value)), () => "ok").otherwise(() => "other");"#,
         );
 
-        assert!(output.contains("=>check(value)"), "{output}");
-        assert!(output.contains(")(input)"), "{output}");
+        assert!(output.contains("check(_tsPatternInput) ?"), "{output}");
     }
 
     #[test]
@@ -4229,14 +4229,16 @@ const result = match(input).with({ type: undefined }, () => true).otherwise(() =
     }
 
     #[test]
-    fn leaves_exhaustive_expression_unchanged_to_avoid_iife() {
+    fn falls_back_to_runtime_exhaustive_without_iife() {
         let output = transform(
             r#"import { match } from "ts-pattern";
 const result = match(input).with("ok", () => true).exhaustive();"#,
         );
 
-        assert!(output.contains("match(input).with"), "{output}");
-        assert!(!output.contains("(()=>{"), "{output}");
+        assert!(
+            output.contains(r#"input === "ok" ? true : match(input).exhaustive()"#),
+            "{output}"
+        );
     }
 
     #[test]
