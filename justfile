@@ -16,7 +16,7 @@ test-browser:
     cd web && npm ci && env -u WAYLAND_DISPLAY -u DISPLAY npm run test:browser
 
 bench:
-    cd web && npm ci && npm run --silent bench
+    cd web && npm ci --silent && npm run --silent bench
 
 check-examples:
     cd examples && npm ci && npm run check
