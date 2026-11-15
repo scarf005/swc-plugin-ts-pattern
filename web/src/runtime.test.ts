@@ -82,7 +82,7 @@ test("all match-based examples are compiled away", async () => {
       })
     ).code
       // The no-match fallback throws ts-pattern's own NonExhaustiveError.
-      .replace(/throw \(0, [\w$]+\.match\)\([\w$]+\)\.exhaustive\(\);/g, "")
+      .replace(/\(0, [\w$]+\.match\)\([\w$]+\)\.exhaustive\(\)/g, "")
 
     assert(!output.includes(".with("), `${name}: still contains .with()`)
     assert(
