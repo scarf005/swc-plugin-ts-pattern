@@ -1792,3 +1792,26 @@ test("matches on a computed input compile in any expression position", async () 
   )
   assert.doesNotMatch(compiled, /\.with\(/)
 })
+
+test("const pattern aliases declared inside a function compile", async () => {
+  const compiled = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const n = 1;
+      const named = { name: P.string };
+      const one = { a: P.when((v) => v === n) };
+      const check = (input) => {
+        const n = 2;
+        return match(input)
+          .with({ a: named }, () => "named")
+          .with(one, () => "one")
+          .otherwise(() => "other");
+      };
+      return [check({ a: { name: "x" } }), check({ a: 1 }), check({ a: 2 })];
+    };
+  `,
+    ["named", "one", "other"],
+  )
+  assert.doesNotMatch(compiled, /\.with\(/)
+})
