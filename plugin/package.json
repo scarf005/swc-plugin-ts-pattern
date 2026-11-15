@@ -63,16 +63,16 @@
   },
   "devDependencies": {
     "@swc/binding_core_wasm": "https://github.com/scarf005/swc-wasm/releases/download/binding-core-wasm-plugin-v1.15.33-plugin.1/swc-binding_core_wasm-1.15.33.tgz",
-    "ts-pattern-5.0": "npm:ts-pattern@^5.0.8",
-    "ts-pattern-5.1": "npm:ts-pattern@^5.1.2",
-    "ts-pattern-5.2": "npm:ts-pattern@^5.2.0",
-    "ts-pattern-5.3": "npm:ts-pattern@^5.3.1",
-    "ts-pattern-5.4": "npm:ts-pattern@^5.4.0",
-    "ts-pattern-5.5": "npm:ts-pattern@^5.5.0",
-    "ts-pattern-5.6": "npm:ts-pattern@^5.6.2",
-    "ts-pattern-5.7": "npm:ts-pattern@^5.7.1",
-    "ts-pattern-5.8": "npm:ts-pattern@^5.8.0",
-    "ts-pattern-5.9": "npm:ts-pattern@^5.9.2"
+    "ts-pattern-5.0": "npm:ts-pattern@5.0.8",
+    "ts-pattern-5.1": "npm:ts-pattern@5.1.2",
+    "ts-pattern-5.2": "npm:ts-pattern@5.2.0",
+    "ts-pattern-5.3": "npm:ts-pattern@5.3.1",
+    "ts-pattern-5.4": "npm:ts-pattern@5.4.0",
+    "ts-pattern-5.5": "npm:ts-pattern@5.5.0",
+    "ts-pattern-5.6": "npm:ts-pattern@5.6.2",
+    "ts-pattern-5.7": "npm:ts-pattern@5.7.1",
+    "ts-pattern-5.8": "npm:ts-pattern@5.8.0",
+    "ts-pattern-5.9": "npm:ts-pattern@5.9.2"
   },
   "repository": {
     "type": "git",
