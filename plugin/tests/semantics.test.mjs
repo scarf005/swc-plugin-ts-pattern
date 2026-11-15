@@ -1283,12 +1283,14 @@ test("optional selections read their property once", async () => {
     import { match, P } from "ts-pattern";
     export const run = () => {
       const reads = [];
-      const input = { get a() { reads.push("a"); return 3; } };
+      const input = { get a() { reads.push("a"); return { get b() { reads.push("b"); return 3; } }; } };
       const pick = (input) => match(input).with({ a: P.optional(P.select()) }, (s) => s).otherwise(() => "other");
-      return [pick(input), reads];
+      const nested = (input) =>
+        match(input).with({ a: P.optional({ b: P.select() }) }, (s) => [s, s]).otherwise(() => "other");
+      return [typeof pick(input), nested(input), nested({}), reads];
     };
   `,
-    [3, ["a"]],
+    ["object", [3, 3], [undefined, undefined], ["a", "a", "b"]],
   )
   assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
 })

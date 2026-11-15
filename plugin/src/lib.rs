@@ -1340,17 +1340,29 @@ impl TsPatternTransformer {
     ) -> Option<Expr> {
         let undefined = undefined_expr(self.unresolved_ctxt);
         let mut inner_selections = Vec::new();
-        let test =
+        let mut test =
             self.pattern_test_with_selections(value.clone(), pattern, &mut inner_selections)?;
+        // The conditional selection below reads a nested value itself, so the
+        // test does not read it a second time.
+        for selection in &inner_selections {
+            if !selection.value.eq_ignore_span(&value) {
+                test.visit_mut_with(&mut DropRead(&selection.value));
+            }
+        }
         selections.extend(
             inner_selections
                 .into_iter()
                 .map(|selection| SelectionBinding {
-                    value: cond_expr(
-                        strict_eq(value.clone(), undefined.clone()),
-                        undefined.clone(),
-                        selection.value,
-                    ),
+                    // Selecting the value itself already gives `undefined`.
+                    value: if selection.value.eq_ignore_span(&value) {
+                        selection.value
+                    } else {
+                        cond_expr(
+                            strict_eq(value.clone(), undefined.clone()),
+                            undefined.clone(),
+                            selection.value,
+                        )
+                    },
                     ..selection
                 }),
         );
@@ -2312,7 +2324,7 @@ fn parse_when_arm(call: &CallExpr) -> Option<MatchArm> {
 fn selection_needs_capture(expr: &Expr) -> bool {
     matches!(
         expr,
-        Expr::Member(_) | Expr::Call(_) | Expr::New(_) | Expr::Seq(_)
+        Expr::Member(_) | Expr::Call(_) | Expr::New(_) | Expr::Seq(_) | Expr::Cond(_)
     )
 }
 
@@ -2378,6 +2390,25 @@ impl VisitMut for ReadOnce {
             };
             self.found = true;
             return;
+        }
+        expr.visit_mut_children_with(self);
+    }
+}
+
+/// Replaces `(target, true)`, a test that only reads `target`, with `true`.
+struct DropRead<'a>(&'a Expr);
+
+impl VisitMut for DropRead<'_> {
+    fn visit_mut_expr(&mut self, expr: &mut Expr) {
+        if let Expr::Paren(ParenExpr { expr: inner, .. }) = expr {
+            if let Expr::Seq(SeqExpr { exprs, .. }) = &**inner {
+                if let [read, result] = exprs.as_slice() {
+                    if (**read).eq_ignore_span(self.0) && as_bool_lit(result) == Some(true) {
+                        *expr = bool_lit(true);
+                        return;
+                    }
+                }
+            }
         }
         expr.visit_mut_children_with(self);
     }
@@ -3098,8 +3129,7 @@ fn collect_pat_bindings(param: &Pat, value: Expr, bindings: &mut Vec<(Id, Expr)>
             ObjectPatProp::Assign(_) | ObjectPatProp::Rest(_) => None,
         }),
         // Array destructuring iterates its value, which indexing does not.
-        Pat::Array(_)
-        | Pat::Assign(_) | Pat::Rest(_) | Pat::Invalid(_) | Pat::Expr(_) => None,
+        Pat::Array(_) | Pat::Assign(_) | Pat::Rest(_) | Pat::Invalid(_) | Pat::Expr(_) => None,
     }
 }
 
