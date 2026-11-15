@@ -1315,3 +1315,59 @@ test("optional selections read their property once", async () => {
   )
   assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
 })
+
+test("object patterns test integer keys before string keys", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const log = [];
+      const f = (input) =>
+        match(input)
+          .with({ b: P.when(() => log.push("b")), 1: P.when(() => log.push("1")), a: P.when(() => log.push("a")), 0: P.when(() => log.push("0")) }, () => "hit")
+          .otherwise(() => "miss");
+      return [f({ a: 1, b: 1, 0: 1, 1: 1 }), log];
+    };
+  `,
+    ["hit", ["0", "1", "b", "a"]],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("arms keep predicates on keys before the discriminant", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const log = [];
+      const f = (input) =>
+        match(input)
+          .with({ x: P.when(() => (log.push("x"), true)), type: "a" }, () => "a")
+          .with({ type: "b" }, () => "b")
+          .otherwise(() => "miss");
+      return [f({ type: "b", x: 1 }), f({ type: "a", x: 1 }), log];
+    };
+  `,
+    ["b", "a", ["x", "x"]],
+  )
+})
+
+test("later patterns are built after earlier handlers run", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const log = [];
+      const make = (n) => (log.push("make " + n), (v) => v === n);
+      const f = (input) =>
+        match(input).with(P.when(make(1)), () => (log.push("h1"), 1)).with(P.when(make(2)), () => (log.push("h2"), 2)).otherwise(() => 0);
+      const g = (input) =>
+        match(input).with(1, () => { throw new Error("boom") }).with(P.instanceOf((log.push("ctor"), Error)), () => 2).otherwise(() => 0);
+      let error;
+      try { g(1) } catch (e) { error = e.message }
+      return [f(1), f(2), error, log];
+    };
+  `,
+    [1, 2, "boom", ["make 1", "h1", "make 1", "make 2", "h2"]],
+  )
+})
