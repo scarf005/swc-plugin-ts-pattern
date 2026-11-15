@@ -1295,7 +1295,11 @@ test("arms with several patterns pass only the selections of the pattern that ma
   `,
     [1, 3, { x: 1 }, { x: 4 }],
   )
-  assert.doesNotMatch(code, /\.with\(/, "arms whose patterns select the same names must be compiled")
+  assert.doesNotMatch(
+    code,
+    /\.with\(/,
+    "arms whose patterns select the same names must be compiled",
+  )
 })
 
 test("optional selections read their property once", async () => {
