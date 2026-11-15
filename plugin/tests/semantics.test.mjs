@@ -1815,3 +1815,20 @@ test("const pattern aliases declared inside a function compile", async () => {
   )
   assert.doesNotMatch(compiled, /\.with\(/)
 })
+
+// Any iteration of a `P.array` pattern marks it variadic, so `[items]` then
+// matches like `[...items]`: [5] matches and [[1]] does not.
+test("iterated P.array aliases in tuples keep the runtime result", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const items = P.array(P.number);
+    const [first] = items;
+    export const run = () => {
+      const check = (input) => match(input).with([items], () => "b").otherwise(() => 0);
+      return [check([5]), check([[1]])];
+    };
+  `,
+    ["b", 0],
+  )
+})
