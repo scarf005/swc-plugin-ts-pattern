@@ -1581,3 +1581,192 @@ test("terminal methods compile and match the runtime on every version", async ()
     assert.deepEqual(load(compiled, version)(), load(raw, version)(), `${version}: ${compiled}`)
   }
 })
+
+// ts-pattern reads `length`, then calls `slice` for the head, the tail and the
+// rest, in that order, on a variadic tuple.
+test("variadic tuples compile and slice their input like ts-pattern", async () => {
+  const compiled = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => [[], [1], [1, "a"], [1, 2, "a"], [1, "x", 2, true], [2, 3]].map((items) => {
+      const log = [];
+      const input = new Proxy(items, {
+        get: (target, key, receiver) => {
+          if (typeof key === "string") log.push(key);
+          return Reflect.get(target, key, receiver);
+        },
+      });
+      const result = match(input)
+        .with([1, ...P.array(P.number), "a"], () => "both")
+        .with([...P.array(), true], () => "tail")
+        .with([P.select(), ...P.array(P.number)], (head) => ["head", head])
+        .with([...P.array(P.string)], () => "strings")
+        .otherwise(() => "other");
+      return [result, log];
+    });
+  `,
+    [
+      [
+        "strings",
+        [
+          "length",
+          "length",
+          "length",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "slice",
+          "length",
+          "constructor",
+        ],
+      ],
+      [
+        ["head", 1],
+        [
+          "length",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+        ],
+      ],
+      [
+        "both",
+        [
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+          "slice",
+          "length",
+          "constructor",
+        ],
+      ],
+      [
+        "both",
+        [
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "2",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+        ],
+      ],
+      [
+        "tail",
+        [
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "3",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+          "2",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "slice",
+          "length",
+          "constructor",
+          "3",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "1",
+          "2",
+        ],
+      ],
+      [
+        ["head", 2],
+        [
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+          "slice",
+          "length",
+          "constructor",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "length",
+          "slice",
+          "length",
+          "constructor",
+          "0",
+          "slice",
+          "length",
+          "constructor",
+          "1",
+        ],
+      ],
+    ],
+  )
+  assert.doesNotMatch(compiled, /\.with\(/, compiled)
+})
+
+test("P.array patterns spread elsewhere stay variadic", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const rest = P.array(P.number);
+    export const run = () => [
+      match([1, 2]).with([1, ...rest], () => "spread").otherwise(() => "other"),
+      match([1, 2]).with([rest], () => "variadic").otherwise(() => "other"),
+    ];
+  `,
+    ["spread", "variadic"],
+  )
+})
