@@ -1028,10 +1028,7 @@ impl TsPatternTransformer {
             )?
         };
 
-        let mut test = match &arm.guard {
-            Some(guard) => and(pattern_test, predicate_result(guard, guard_input)),
-            None => pattern_test,
-        };
+        let mut test = pattern_test;
         let mut captures = self.pending_temps.take();
         let mut grouped_captures: Vec<(Id, Ident)> = Vec::new();
         let mut handler_selections = Vec::with_capacity(selections.len());
@@ -1054,7 +1051,15 @@ impl TsPatternTransformer {
                 let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
                 test.visit_mut_with(&mut replacer);
                 if !replacer.found {
-                    test = seq_expr(assign_expr(capture.clone(), selection.value), test);
+                    // ts-pattern reads a selection only after the type tests
+                    // before it pass.
+                    test = and(
+                        test,
+                        seq_expr(
+                            assign_expr(capture.clone(), selection.value),
+                            bool_lit(true),
+                        ),
+                    );
                 }
                 if let Some(group) = selection.capture_group.clone() {
                     grouped_captures.push((group, capture.clone()));
@@ -1068,6 +1073,9 @@ impl TsPatternTransformer {
                 capture_group: None,
                 projection: None,
             });
+        }
+        if let Some(guard) = &arm.guard {
+            test = and(test, predicate_result(guard, guard_input));
         }
 
         let handler_input = selection_handler_input(match_input, handler_selections)?;
@@ -2312,7 +2320,7 @@ fn selection_capture_projection(capture: &Ident, projection: Option<Vec<String>>
     let mut value = ident_expr(capture);
     if let Some(projection) = projection {
         for prop in projection {
-            value = member_expr(value, &prop);
+            value = named_member_expr(value, &prop);
         }
     }
     value
@@ -2406,10 +2414,7 @@ fn named_selection_object(selections: Vec<SelectionBinding>) -> Expr {
             .into_iter()
             .map(|selection| {
                 PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                    key: PropName::Ident(IdentName::new(
-                        selection.name.expect("named selection").into(),
-                        DUMMY_SP,
-                    )),
+                    key: selection_prop_name(&selection.name.expect("named selection")),
                     value: Box::new(selection.value),
                 })))
             })
@@ -2439,9 +2444,30 @@ fn selection_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Lit(Lit::Str(str)) => Some(str.value.to_string_lossy().to_string()),
         Expr::Tpl(tpl) if tpl.exprs.is_empty() && tpl.quasis.len() == 1 => {
-            Some(tpl.quasis[0].raw.to_string())
+            Some(tpl.quasis[0].cooked.as_ref()?.to_string_lossy().to_string())
         }
         _ => None,
+    }
+}
+
+/// A key for the selection `name`, quoted when it is not an identifier.
+fn selection_prop_name(name: &str) -> PropName {
+    if Ident::verify_symbol(name).is_ok() {
+        PropName::Ident(IdentName::new(name.into(), DUMMY_SP))
+    } else {
+        PropName::Str(Str {
+            span: DUMMY_SP,
+            value: name.into(),
+            raw: None,
+        })
+    }
+}
+
+/// Reads the selection `name` from `obj`.
+fn named_member_expr(obj: Expr, name: &str) -> Expr {
+    match selection_prop_name(name) {
+        PropName::Str(str) => computed_member_expr(obj, Expr::Lit(Lit::Str(str))),
+        _ => member_expr(obj, name),
     }
 }
 
@@ -3694,7 +3720,7 @@ fn record_selection_object(
             return ident_expr(array);
         };
         props.push(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-            key: PropName::Ident(IdentName::new(name.as_str().into(), DUMMY_SP)),
+            key: selection_prop_name(name),
             value: Box::new(ident_expr(array)),
         }))));
     }
