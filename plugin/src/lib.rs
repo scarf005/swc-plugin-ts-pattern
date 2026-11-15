@@ -771,7 +771,7 @@ impl TsPatternTransformer {
             }
         }
 
-        if let Some(path) = common_switch_path(&arms) {
+        if let Some(path) = common_switch_path(&arms, |pattern| self.runs_user_code(pattern)) {
             return self.compile_path_switch(
                 sink,
                 inputs,
@@ -1741,40 +1741,42 @@ impl TsPatternTransformer {
         selections: &mut Vec<SelectionBinding>,
         base: Expr,
     ) -> Option<Expr> {
-        object.props.iter().try_fold(base, |acc, prop| {
-            let PropOrSpread::Prop(prop) = prop else {
-                return None;
-            };
-
-            let Prop::KeyValue(key_value) = &**prop else {
-                return None;
-            };
-
-            let prop_access = prop_access(value.clone(), &key_value.key)?;
-            let first_selection = selections.len();
-            let test = self.pattern_test_with_selections(
-                prop_access.clone(),
-                &key_value.value,
-                selections,
-            )?;
-            let test = self.read_once(
-                &prop_access,
-                &key_value.key,
-                test,
-                &mut selections[first_selection..],
-            );
-            let test = if self.is_optional_pattern(&key_value.value) {
-                test
-            } else {
-                let test = if as_bool_lit(&test) == Some(true) {
-                    seq_expr(prop_access, bool_lit(true))
-                } else {
-                    test
+        own_keys_order(object)
+            .into_iter()
+            .try_fold(base, |acc, prop| {
+                let PropOrSpread::Prop(prop) = prop else {
+                    return None;
                 };
-                and(prop_in_object(&key_value.key, value.clone())?, test)
-            };
-            Some(and(acc, test))
-        })
+
+                let Prop::KeyValue(key_value) = &**prop else {
+                    return None;
+                };
+
+                let prop_access = prop_access(value.clone(), &key_value.key)?;
+                let first_selection = selections.len();
+                let test = self.pattern_test_with_selections(
+                    prop_access.clone(),
+                    &key_value.value,
+                    selections,
+                )?;
+                let test = self.read_once(
+                    &prop_access,
+                    &key_value.key,
+                    test,
+                    &mut selections[first_selection..],
+                );
+                let test = if self.is_optional_pattern(&key_value.value) {
+                    test
+                } else {
+                    let test = if as_bool_lit(&test) == Some(true) {
+                        seq_expr(prop_access, bool_lit(true))
+                    } else {
+                        test
+                    };
+                    and(prop_in_object(&key_value.key, value.clone())?, test)
+                };
+                Some(and(acc, test))
+            })
     }
 
     /// Makes `test` and the selections it added read `access` once, as
@@ -2103,6 +2105,30 @@ enum PatternCall {
 }
 
 impl TsPatternTransformer {
+    /// Whether testing `pattern` can call code from the source, such as a
+    /// `P.when` predicate or an `instanceof` check.
+    fn runs_user_code(&self, pattern: &Expr) -> bool {
+        let runs = |expr: &Expr| self.runs_user_code(expr);
+        match self.resolve_pattern_expr(pattern) {
+            Expr::Object(object) => object.props.iter().any(|prop| {
+                prop.as_prop()
+                    .and_then(|prop| prop.as_key_value())
+                    .is_none_or(|key_value| runs(&key_value.value))
+            }),
+            Expr::Array(array) => array.elems.iter().flatten().any(|elem| runs(&elem.expr)),
+            Expr::Paren(paren) => runs(&paren.expr),
+            Expr::Call(call) => match self.pattern_call(call) {
+                PatternCall::Select | PatternCall::Nested | PatternCall::Modifier => {
+                    method_base(call).is_some_and(runs)
+                        || call.args.iter().any(|arg| runs(&arg.expr))
+                }
+                PatternCall::Values => matches!(self.p_call_api(call), Some(PApi::Call(..))),
+                PatternCall::When | PatternCall::Opaque => true,
+            },
+            _ => false,
+        }
+    }
+
     fn pattern_call(&self, call: &CallExpr) -> PatternCall {
         let Callee::Expr(callee) = &call.callee else {
             return PatternCall::Opaque;
@@ -2904,7 +2930,12 @@ fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
     private_ident!(DUMMY_SP, format!("{prefix}{suffix}"))
 }
 
-fn common_switch_path(arms: &[MatchArm]) -> Option<Vec<PropName>> {
+/// ts-pattern tests keys before the switch key first, so a path must not
+/// skip user code in them.
+fn common_switch_path(
+    arms: &[MatchArm],
+    runs_user_code: impl Fn(&Expr) -> bool,
+) -> Option<Vec<PropName>> {
     if arms.is_empty()
         || arms
             .iter()
@@ -2925,10 +2956,52 @@ fn common_switch_path(arms: &[MatchArm]) -> Option<Vec<PropName>> {
             return false;
         };
         values.any(|value| !switch_literals_eq(first, value))
-            && arms
-                .iter()
-                .all(|arm| literal_at_path(&arm.patterns[0], path).is_some())
+            && arms.iter().all(|arm| {
+                literal_at_path(&arm.patterns[0], path).is_some()
+                    && !runs_code_before_path(&arm.patterns[0], path, &runs_user_code)
+            })
     })
+}
+
+fn runs_code_before_path(
+    pattern: &Expr,
+    path: &[PropName],
+    runs_user_code: &impl Fn(&Expr) -> bool,
+) -> bool {
+    let (Expr::Object(object), Some(segment)) = (pattern, path.first()) else {
+        return false;
+    };
+    for prop in own_keys_order(object) {
+        let Some(key_value) = prop.as_prop().and_then(|prop| prop.as_key_value()) else {
+            continue;
+        };
+        if prop_name_eq(&key_value.key, segment) {
+            return runs_code_before_path(&key_value.value, &path[1..], runs_user_code);
+        }
+        if runs_user_code(&key_value.value) {
+            return true;
+        }
+    }
+    false
+}
+
+/// ts-pattern tests keys in `Reflect.ownKeys` order: array indexes in
+/// ascending order, then the other keys in source order.
+fn own_keys_order(object: &ObjectLit) -> Vec<&PropOrSpread> {
+    let mut props = object.props.iter().collect::<Vec<_>>();
+    props.sort_by_key(|prop| {
+        prop.as_prop()
+            .and_then(|prop| prop.as_key_value())
+            .and_then(|key_value| static_key(&key_value.key))
+            .and_then(|key| array_index(&key))
+            .map_or((1, 0), |index| (0, index))
+    });
+    props
+}
+
+fn array_index(key: &str) -> Option<u32> {
+    let index = key.parse::<u32>().ok()?;
+    (index != u32::MAX && index.to_string() == key).then_some(index)
 }
 
 fn collect_literal_paths(pattern: &Expr, prefix: Vec<PropName>, paths: &mut Vec<Vec<PropName>>) {
