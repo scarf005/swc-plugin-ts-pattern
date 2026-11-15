@@ -6,7 +6,7 @@
     "unstable-argument": 1
   },
   "intersection-and-union.test.ts": {
-    "unsupported-pattern": 2
+    "unsupported-pattern": 1
   },
   "is-matching.test.ts": {
     "isMatching": 4

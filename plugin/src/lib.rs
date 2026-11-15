@@ -1470,6 +1470,8 @@ impl TsPatternTransformer {
             PApi::Call("optional", call) => {
                 self.optional_test(value, single_arg(call)?, selections)
             }
+            // `P.shape(p)` is `P.when(isMatching(p))`, which drops selections.
+            PApi::Call("shape", call) => self.unselected_test(value, single_arg(call)?),
             PApi::Call("not", call) => Some(unary(
                 UnaryOp::Bang,
                 self.unselected_test(value, single_arg(call)?)?,
@@ -2685,7 +2687,8 @@ impl TsPatternTransformer {
         match self.p_call_api(call) {
             Some(PApi::Call("when", _)) => PatternCall::When,
             Some(PApi::Call(
-                "union" | "intersection" | "optional" | "not" | "array" | "set" | "map" | "record",
+                "union" | "intersection" | "optional" | "not" | "array" | "set" | "map" | "record"
+                | "shape",
                 _,
             )) => PatternCall::Nested,
             Some(PApi::Call("instanceOf", _) | PApi::Chain(..)) => PatternCall::Values,
