@@ -5,7 +5,11 @@ import { transform } from "@swc/core"
 import { transformTsPattern } from "../transform.mjs"
 
 const require = createRequire(import.meta.url)
-const evaluate = async (source, plugin) => {
+// Every ts-pattern 5.x minor, installed as `ts-pattern-5.<minor>` aliases.
+const versions = Object.keys(require("../package.json").devDependencies)
+  .filter((name) => name.startsWith("ts-pattern-"))
+
+const compile = async (source, plugin) => {
   const options = {
     filename: "semantics.ts",
     sourceMaps: false,
@@ -18,21 +22,44 @@ const evaluate = async (source, plugin) => {
       swcOptions: options,
     })
     : await transform(source, options)
+  return code
+}
+
+const load = (code, version) => {
   const module = { exports: {} }
   new Function("require", "module", "exports", code)(
-    require,
+    (id) => require(id === "ts-pattern" ? version : id),
     module,
     module.exports,
   )
-  return { code, run: module.exports.run }
+  return module.exports.run
+}
+
+const evaluate = async (source, plugin, version = versions.at(-1)) => {
+  const code = await compile(source, plugin)
+  return { code, run: load(code, version) }
+}
+
+// Runs on every version that exports each `P.<name>` the source uses.
+const versionsFor = (source) => {
+  const names = [...source.matchAll(/\bP\.(\w+)/g)].map(([, name]) => name)
+  return versions.filter((version) =>
+    names.every((name) => name in require(version).P)
+  )
 }
 
 const assertEquivalent = async (source, expected) => {
-  const baseline = await evaluate(source, false)
-  const compiled = await evaluate(source, true)
-  assert.deepEqual(baseline.run(), expected, "raw ts-pattern reference")
-  assert.deepEqual(compiled.run(), expected, compiled.code)
-  return compiled.code
+  const baseline = await compile(source, false)
+  const compiled = await compile(source, true)
+  for (const version of versionsFor(source)) {
+    assert.deepEqual(
+      load(baseline, version)(),
+      expected,
+      `${version}: raw ts-pattern reference`,
+    )
+    assert.deepEqual(load(compiled, version)(), expected, `${version}: ${compiled}`)
+  }
+  return compiled
 }
 
 // Ordinary functions are intentional here: callback arguments and dynamic this
@@ -753,6 +780,29 @@ test("type-only error imports do not become runtime bindings", async () => {
     "Error",
   )
 })
+
+// 5.0-5.2 throw a plain Error and do not export NonExhaustiveError.
+for (const [binding, match] of [["{ match }", "match"], ["* as TP", "TP.match"]]) {
+  test(`unmatched exhaustive through ${match} throws each version's error`, async () => {
+    const source = `
+      import ${binding} from "ts-pattern";
+      export const run = () => {
+        try { return ${match}({ a: 1 }).with({ a: 2 }, () => 2).exhaustive(); }
+        catch (error) { return [error.constructor.name, error.message, error.input]; }
+      };
+    `
+    const baseline = await compile(source, false)
+    const compiled = await compile(source, true)
+    assert.doesNotMatch(compiled, /\.with\(/)
+    for (const version of versions) {
+      assert.deepEqual(
+        load(compiled, version)(),
+        load(baseline, version)(),
+        `${version}: ${compiled}`,
+      )
+    }
+  })
+}
 
 test("failed transforms do not leave speculative error imports", async () => {
   const code = await assertEquivalent(
