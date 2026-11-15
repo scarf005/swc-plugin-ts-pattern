@@ -42,3 +42,7 @@ update-readme-bench-ci:
     gh run download "$run" --name benchmark --dir "$dir"
     mv "$dir/just-bench.txt" docs/just-bench.txt
     deno run -A npm:automd --input plugin/README.md
+
+# Tests, builds and publishes the plugin to npm; a prerelease gets its label as dist-tag.
+release:
+    cd plugin && npm publish --tag "$(node -p "require('./package.json').version.match(/-([a-z]+)/)?.[1] ?? 'latest'")"

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict"
-import { execFile, execFileSync, spawnSync } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { createServer } from "node:http"
-import { promisify } from "node:util"
+import { execFileSync, spawnSync } from "node:child_process"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { test } from "node:test"
 import { transformTsPattern } from "../transform.mjs"
@@ -11,7 +9,6 @@ const pluginRoot = fileURLToPath(new URL("../", import.meta.url))
 const cli = fileURLToPath(new URL("../run.mjs", import.meta.url))
 const register = fileURLToPath(new URL("../register.mjs", import.meta.url))
 const denoAvailable = spawnSync("deno", ["--version"]).status === 0
-const execFileAsync = promisify(execFile)
 
 const withEntry = async (run) => {
   const directory = await mkdtemp(`${pluginRoot}tests/runtime-`)
@@ -252,136 +249,6 @@ for (
       })
     }))
 }
-
-test(
-  "Deno remote package materializes its exact WASM and transforms the local entry",
-  { skip: !denoAvailable },
-  () =>
-    withEntry(async (entry, directory) => {
-      const paths = new Set([
-        "/run.mjs",
-        "/register.mjs",
-        "/loader.mjs",
-        "/transform.mjs",
-        "/target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
-      ])
-      let wasmRequests = 0
-      const server = createServer(async (request, response) => {
-        if (!paths.has(request.url)) {
-          response.writeHead(404).end()
-          return
-        }
-        if (request.url.endsWith(".wasm.bin")) {
-          wasmRequests += 1
-          if (wasmRequests === 1) {
-            response.writeHead(503).end("Unavailable")
-            return
-          }
-          if (wasmRequests === 2) {
-            response.end("Not WASM")
-            return
-          }
-          if (wasmRequests === 3) {
-            response.setHeader("Content-Length", 64 * 1024 * 1024 + 1)
-            response.end("Too large")
-            return
-          }
-          if (wasmRequests === 4) {
-            const chunk = new Uint8Array(1024 * 1024)
-            for (let index = 0; index < 64; index += 1) response.write(chunk)
-            response.end(new Uint8Array(1))
-            return
-          }
-        }
-        response.setHeader(
-          "Content-Type",
-          request.url.endsWith(".mjs")
-            ? "application/javascript"
-            : "application/wasm",
-        )
-        response.end(await readFile(`${pluginRoot}${request.url.slice(1)}`))
-      })
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
-      try {
-        const config = `${directory}/deno.json`
-        await writeFile(
-          config,
-          JSON.stringify({
-            imports: {
-              "ts-pattern": "npm:ts-pattern@5.9.0",
-              "@swc/core": "npm:@swc/core@~1.15.0",
-            },
-            nodeModulesDir: "auto",
-          }),
-        )
-        const base = `http://127.0.0.1:${server.address().port}`
-        const consumer = `${directory}/consumer.ts`
-        const executionOptions = {
-          encoding: "utf8",
-          env: { ...process.env, XDG_CACHE_HOME: `${directory}/cache` },
-        }
-        await writeFile(
-          consumer,
-          `
-import assert from "node:assert/strict";
-import { transformTsPattern, transformTsPatternSync, defaultPluginPath } from "${base}/transform.mjs";
-const source = 'import { match } from "ts-pattern"; export const value = match(1).with(1, () => 2).otherwise(() => 0)';
-assert.throws(() => transformTsPatternSync(source), /Resolve the remote WASM/);
-await assert.rejects(transformTsPattern(source), /Unable to download plugin WASM: 503/);
-await assert.rejects(transformTsPattern(source), /Invalid plugin WASM/);
-await assert.rejects(transformTsPattern(source), /Plugin WASM exceeds 64 MiB/);
-await assert.rejects(transformTsPattern(source), /Plugin WASM exceeds 64 MiB/);
-const [first, second] = await Promise.all([transformTsPattern(source), transformTsPattern(source)]);
-assert.ok(!first.code.includes(".with("));
-assert.equal(first.code, second.code);
-assert.ok(!transformTsPatternSync(source, { pluginPath: await defaultPluginPath() }).code.includes(".with("));
-console.log(JSON.stringify(await defaultPluginPath()));
-`,
-        )
-        const { stdout: cachedPath } = await execFileAsync(
-          "deno",
-          ["run", "-A", "--config", config, consumer],
-          executionOptions,
-        )
-        assert.ok(JSON.parse(cachedPath).startsWith(`${directory}/cache/`))
-        await writeFile(JSON.parse(cachedPath), "corrupt cache fixture")
-        assert.equal(
-          wasmRequests,
-          5,
-          "failed downloads retry; concurrent transforms share one successful download",
-        )
-        for (
-          const args of [["--preload", `${base}/register.mjs`, entry], [
-            `${base}/run.mjs`,
-            entry,
-          ]]
-        ) {
-          const { stdout } = await execFileAsync("deno", [
-            "run",
-            "-A",
-            "--config",
-            config,
-            ...args,
-            "argument",
-          ], executionOptions)
-          assert.deepEqual(JSON.parse(stdout), {
-            result: "one",
-            compiled: true,
-            args: ["argument"],
-          })
-        }
-        assert.equal(
-          wasmRequests,
-          6,
-          "a corrupt cache downloads again; a valid cache needs no download",
-        )
-      } finally {
-        await new Promise((resolve, reject) =>
-          server.close((error) => error ? reject(error) : resolve())
-        )
-      }
-    }),
-)
 
 for (
   const [args, status] of [

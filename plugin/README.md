@@ -15,16 +15,8 @@ The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserv
 
 ## Install
 
-From npm:
-
 ```sh
 npm install @scarf005/swc-plugin-ts-pattern @swc/core@~1.15.0 ts-pattern
-```
-
-Or from JSR:
-
-```sh
-npx jsr add @scarf005/swc-plugin-ts-pattern
 ```
 
 ## Configure SWC
@@ -35,7 +27,7 @@ Supported versions:
 - `ts-pattern` 5.0 to 5.9.
 - Node.js 22.15 or later, and Deno 2.9.7 or later.
 
-Resolve the WASM explicitly rather than using the package root: the JSR/npm bridge root exports the transform API, while native npm archives use a WASM root.
+The package root resolves to the plugin WASM.
 
 ```ts
 import { transform } from "@swc/core";
@@ -73,16 +65,14 @@ node --import @scarf005/swc-plugin-ts-pattern/register ./foo.ts
 Use `import { match } from "ts-pattern"` with a `deno.json` import map, or `import { match } from "npm:ts-pattern@5.9.0"`. Run through the CLI:
 
 ```sh
-deno run -A jsr:@scarf005/swc-plugin-ts-pattern/run ./foo.ts
+deno run -A npm:@scarf005/swc-plugin-ts-pattern/run ./foo.ts
 ```
 
 The CLI imports the entry as a module. Use preload when your entry relies on native main-module identity (`import.meta.main` or `require.main`).
 
 ```sh
-deno run -A --preload jsr:@scarf005/swc-plugin-ts-pattern/register ./foo.ts
+deno run -A --preload npm:@scarf005/swc-plugin-ts-pattern/register ./foo.ts
 ```
-
-Native JSR imports download the package's WASM into a content-addressed local cache before registering the loader; downloads are limited to 64 MiB, damaged cache files are replaced atomically, and download or transform failures abort execution. This requires network, filesystem and native SWC permissions.
 
 Deno requires explicit extensions for relative imports. Import generated `.cts` modules through their default export, then destructure the exported members; Deno cannot discover the SWC-generated named CommonJS exports during static analysis.
 
@@ -101,7 +91,7 @@ const result = await transformTsPattern(source, { filename: "foo.ts" });
 console.log(result.code);
 ```
 
-`defaultPluginPath()` is asynchronous so it can materialize a remote JSR WASM. `transformTsPattern()` prepares it automatically. `transformTsPatternSync()` accepts the same options; for remote imports, first await `defaultPluginPath()` or pass an explicit `pluginPath`.
+`transformTsPatternSync()` accepts the same options.
 
 Set `SWC_PLUGIN_TS_PATTERN_PATH` to use a custom-built WASM with the loader. For programmatic transforms, pass `pluginPath`. Restart the process after rebuilding a custom WASM: SWC caches loaded plugins for the process lifetime.
 
