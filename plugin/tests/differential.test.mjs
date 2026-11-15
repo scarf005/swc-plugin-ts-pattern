@@ -57,6 +57,8 @@ const chains = {
     'match(input).with(P.shape({ a: P.when((v) => (log.push("when a"), v === 1)) }).and({ b: P.select() }), (b) => b).with(P.shape({ kind: P.string }).or(P.shape([P._])), () => "shape").otherwise(() => 0)',
   exhaustive:
     'match(input).with(P.number, () => "number").with(P.string, () => "string").with({ kind: P.select() }, (k) => k).exhaustive()',
+  narrow:
+    'match(input).with(P.number, () => "number").narrow().with({ a: P.select() }, (a) => a).otherwise(() => 0)',
   run: 'match(input).with(P.number, () => "number").with({ a: P.select() }, (a) => a).run()',
   exhaustiveHandler:
     'match(input).returnType().with(P.string, (s) => s).with({ kind: "a" }, () => 1).exhaustive((v) => (log.push("unmatched"), typeof v))',
@@ -177,8 +179,10 @@ export const run = (input: any, log: string[]) => ${chain};
     assert.doesNotMatch(compiled, /\.with\(/, "the chain must compile")
     // A version without one of the chain's `P` APIs fails on both sides.
     const apis = [...chain.matchAll(/P\.(\w+)/g)].map(([, api]) => api)
-    for (const version of versions.filter((version) =>
-      apis.every((api) => api in require(version).P),
+    for (const version of versions.filter(
+      (version) =>
+        apis.every((api) => api in require(version).P) &&
+        (!chain.includes(".narrow()") || "narrow" in require(version).match(0)),
     )) {
       const [rawRun, compiledRun] = [load(raw, version), load(compiled, version)]
       fc.assert(
