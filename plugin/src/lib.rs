@@ -7,7 +7,7 @@ use swc_core::{
     common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        utils::{private_ident, quote_ident},
+        utils::private_ident,
         visit::{Visit, VisitMut, VisitMutWith, VisitWith},
     },
     plugin::{plugin_transform, proxies::TransformPluginProgramMetadata},
@@ -33,8 +33,6 @@ struct TsPatternTransformer {
     namespaces: HashSet<Id>,
     const_bindings: HashMap<Id, Expr>,
     mutated_bindings: HashSet<Id>,
-    non_exhaustive_error: Option<Expr>,
-    needs_non_exhaustive_error_import: bool,
     /// Temporaries that the current arm's tests assign; `arm_parts` declares
     /// them.
     pending_temps: RefCell<Vec<Ident>>,
@@ -62,7 +60,8 @@ struct MatchArm {
 enum Fallback {
     Otherwise(Box<Expr>),
     Matched(Box<Expr>),
-    Exhaustive,
+    /// `.exhaustive()` on a chain started by this `match` callee.
+    Exhaustive(Box<Expr>),
 }
 
 /// How `lower_match` handled an expression.
@@ -164,9 +163,6 @@ impl VisitMut for TsPatternTransformer {
         }
         self.collect_const_bindings(module);
         module.visit_mut_children_with(self);
-        if self.needs_non_exhaustive_error_import {
-            add_non_exhaustive_error_import(module);
-        }
     }
 
     fn visit_mut_block_stmt(&mut self, block: &mut BlockStmt) {
@@ -177,7 +173,7 @@ impl VisitMut for TsPatternTransformer {
         expr.visit_mut_children_with(self);
 
         if let Some(chain) = self.parse_match_chain(expr) {
-            if let Some(compiled) = self.attempt(|this| this.compile_chain(chain)) {
+            if let Some(compiled) = self.compile_chain(chain) {
                 *expr = compiled;
             }
         } else if let Some(compiled) = self.compile_is_matching(expr) {
@@ -278,18 +274,11 @@ impl TsPatternTransformer {
                             "P" | "Pattern" => {
                                 self.p_imports.insert(named.local.to_id());
                             }
-                            "NonExhaustiveError" => {
-                                self.non_exhaustive_error = Some(Expr::Ident(named.local.clone()));
-                            }
                             _ => {}
                         }
                     }
                     ImportSpecifier::Namespace(namespace) => {
                         self.namespaces.insert(namespace.local.to_id());
-                        self.non_exhaustive_error = Some(member_expr(
-                            Expr::Ident(namespace.local.clone()),
-                            "NonExhaustiveError",
-                        ));
                     }
                     ImportSpecifier::Default(_) => {}
                 }
@@ -419,13 +408,13 @@ impl TsPatternTransformer {
 
         // Validate the whole chain by reference before cloning any of it.
         let mut arm_calls = Vec::new();
-        let input = loop {
+        let (callee, input) = loop {
             let call = as_call(receiver)?;
             if self.is_imported_call(call, &self.match_imports, "match") {
-                let [input] = call.args.as_slice() else {
+                let ([input], Callee::Expr(callee)) = (call.args.as_slice(), &call.callee) else {
                     return None;
                 };
-                break &input.expr;
+                break (callee, &input.expr);
             }
             let (method, next) = as_method_call(call)?;
             arm_calls.push((method, call));
@@ -447,9 +436,10 @@ impl TsPatternTransformer {
         Some(MatchChain {
             input: input.clone(),
             arms,
-            fallback: fallback.map_or(Fallback::Exhaustive, |handler| {
-                Fallback::Otherwise(handler.clone())
-            }),
+            fallback: fallback.map_or_else(
+                || Fallback::Exhaustive(callee.clone()),
+                |handler| Fallback::Otherwise(handler.clone()),
+            ),
         })
     }
 
@@ -850,18 +840,14 @@ impl TsPatternTransformer {
             Fallback::Matched(handler) => {
                 sink.deliver(handler_result(handler, vec![input.clone(), input]))
             }
-            Fallback::Exhaustive => Stmt::Throw(ThrowStmt {
+            // ts-pattern throws its own error: `NonExhaustiveError` since 5.3,
+            // a plain `Error` before.
+            Fallback::Exhaustive(callee) => Stmt::Throw(ThrowStmt {
                 span: DUMMY_SP,
-                arg: Box::new(Expr::New(NewExpr {
-                    span: DUMMY_SP,
-                    ctxt: Default::default(),
-                    callee: Box::new(self.exhaustive_error_callee()),
-                    args: Some(vec![ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(input),
-                    }]),
-                    type_args: None,
-                })),
+                arg: Box::new(call_expr(
+                    member_expr(call_expr(*callee, vec![input]), "exhaustive"),
+                    vec![],
+                )),
             }),
         }
     }
@@ -928,36 +914,23 @@ impl TsPatternTransformer {
         let stmts = match sink {
             Sink::Assign(target) => {
                 if !needs_prepared_expression(self, &chain) {
-                    if let Some(compiled) =
-                        self.attempt(|this| this.compile_ternary_chain(chain.clone(), false))
-                    {
+                    if let Some(compiled) = self.compile_ternary_chain(chain.clone(), false) {
                         *expr = compiled;
                         return Lowered::InPlace;
                     }
                 }
-                self.attempt(|this| this.compile_assign_match_stmts(target.clone(), chain.clone()))
+                self.compile_assign_match_stmts(target.clone(), chain.clone())
             }
-            Sink::Return => self.attempt(|this| this.compile_arrow_match_stmts(chain.clone())),
+            Sink::Return => self.compile_arrow_match_stmts(chain.clone()),
         };
         if let Some(stmts) = stmts {
             return Lowered::Stmts(stmts);
         }
         // Fall back to an expression, which may need arrows.
-        if let Some(compiled) = self.attempt(|this| this.compile_chain(chain)) {
+        if let Some(compiled) = self.compile_chain(chain) {
             *expr = compiled;
         }
         Lowered::InPlace
-    }
-
-    /// Runs a lowering attempt, dropping the error import it requested when it
-    /// fails.
-    fn attempt<T>(&mut self, lower: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
-        let pending_import = self.needs_non_exhaustive_error_import;
-        let lowered = lower(self);
-        if lowered.is_none() {
-            self.needs_non_exhaustive_error_import = pending_import;
-        }
-        lowered
     }
 
     /// Runs `visit` in a new declaration scope and returns the temporaries
@@ -1095,16 +1068,6 @@ impl TsPatternTransformer {
 
         let handler_input = selection_handler_input(match_input, handler_selections)?;
         Some((test, handler_input, captures))
-    }
-
-    fn exhaustive_error_callee(&mut self) -> Expr {
-        match &self.non_exhaustive_error {
-            Some(callee) => callee.clone(),
-            None => {
-                self.needs_non_exhaustive_error_import = true;
-                Expr::Ident(quote_ident!("NonExhaustiveError").into())
-            }
-        }
     }
 
     fn pattern_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
@@ -1922,44 +1885,6 @@ fn module_export_name(name: &ModuleExportName) -> String {
 
 fn is_ts_pattern_import(source: &str) -> bool {
     source == "ts-pattern" || source.starts_with("npm:ts-pattern")
-}
-
-fn add_non_exhaustive_error_import(module: &mut Module) {
-    let specifier = || {
-        ImportSpecifier::Named(ImportNamedSpecifier {
-            span: DUMMY_SP,
-            local: quote_ident!("NonExhaustiveError").into(),
-            imported: None,
-            is_type_only: false,
-        })
-    };
-
-    for item in &mut module.body {
-        let ModuleItem::ModuleDecl(ModuleDecl::Import(import)) = item else {
-            continue;
-        };
-
-        if !import.type_only && is_ts_pattern_import(&import.src.value.to_string_lossy()) {
-            import.specifiers.push(specifier());
-            return;
-        }
-    }
-
-    module.body.insert(
-        0,
-        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
-            span: DUMMY_SP,
-            specifiers: vec![specifier()],
-            src: Box::new(Str {
-                span: DUMMY_SP,
-                value: "ts-pattern".into(),
-                raw: None,
-            }),
-            type_only: false,
-            with: None,
-            phase: Default::default(),
-        })),
-    );
 }
 
 fn needs_prepared_expression(transformer: &TsPatternTransformer, chain: &MatchChain) -> bool {
@@ -3856,7 +3781,10 @@ export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img
         );
 
         assert!(output.contains("=>{"), "{output}");
-        assert!(output.contains("throw new NonExhaustiveError"), "{output}");
+        assert!(
+            output.contains("throw match(_tsPatternInput).exhaustive()"),
+            "{output}"
+        );
         assert!(!output.contains("match(result).with"), "{output}");
         assert!(!output.contains("=>()=>"), "{output}");
     }
