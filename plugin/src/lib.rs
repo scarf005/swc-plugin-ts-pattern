@@ -1441,10 +1441,12 @@ impl TsPatternTransformer {
                     .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
                 or,
             ),
+            // ts-pattern tests every pattern in order and keeps their
+            // selections only when all match, like `&&` with outer selections.
             PApi::Call("intersection", call) => join_tests(
-                call.args
-                    .iter()
-                    .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
+                call.args.iter().map(|arg| {
+                    self.pattern_test_with_selections(value.clone(), &arg.expr, selections)
+                }),
                 and,
             ),
             PApi::Call("array", call) => self.array_of_test(value, call, selections),
@@ -1459,12 +1461,14 @@ impl TsPatternTransformer {
             PApi::Modifier("optional", base, call) if call.args.is_empty() => {
                 self.optional_test(value, base, selections)
             }
-            PApi::Modifier(method @ ("and" | "or"), base, call) => {
-                Some((if method == "and" { and } else { or })(
-                    self.unselected_test(value.clone(), base)?,
-                    self.unselected_test(value, single_arg(call)?)?,
-                ))
-            }
+            PApi::Modifier("and", base, call) => Some(and(
+                self.pattern_test_with_selections(value.clone(), base, selections)?,
+                self.pattern_test_with_selections(value, single_arg(call)?, selections)?,
+            )),
+            PApi::Modifier("or", base, call) => Some(or(
+                self.unselected_test(value.clone(), base)?,
+                self.unselected_test(value, single_arg(call)?)?,
+            )),
             PApi::Chain("string", method, call) => string_chain_test(value, method, call),
             PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
             PApi::Chain("bigint", method, call) => bigint_chain_test(value, method, call),
