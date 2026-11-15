@@ -348,6 +348,7 @@ impl TsPatternTransformer {
             Expr::Lit(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
             Expr::Unary(unary) => self.safe_const_pattern(&unary.arg),
             Expr::Tpl(tpl) => tpl.exprs.is_empty(),
+            Expr::Object(_) if has_ambiguous_keys(expr) => false,
             Expr::Object(object) => object.props.iter().all(|prop| match prop {
                 PropOrSpread::Prop(prop) => match &**prop {
                     Prop::KeyValue(key_value) => {
@@ -470,6 +471,9 @@ impl TsPatternTransformer {
             [pattern, value] => (&pattern.expr, value.expr.clone()),
             _ => return None,
         };
+        if has_ambiguous_keys(pattern) {
+            return None;
+        }
         let constant = |value| {
             Box::new(arrow_expr(
                 vec![],
@@ -1129,7 +1133,7 @@ impl TsPatternTransformer {
             | Expr::Lit(Lit::Bool(_))
             | Expr::Lit(Lit::BigInt(_))
             | Expr::Lit(Lit::Null(_)) => Some(strict_eq(value, pattern.clone())),
-            Expr::Ident(ident) if ident.sym.as_ref() == "undefined" => {
+            Expr::Ident(ident) if self.is_global_undefined(ident) => {
                 Some(strict_eq(value, undefined_expr(self.unresolved_ctxt)))
             }
             Expr::Tpl(tpl) if tpl.exprs.is_empty() && tpl.quasis.len() == 1 => {
@@ -1266,6 +1270,10 @@ impl TsPatternTransformer {
         methods.contains(&method)
     }
 
+    fn is_global_undefined(&self, ident: &Ident) -> bool {
+        ident.sym == "undefined" && ident.ctxt == self.unresolved_ctxt
+    }
+
     /// Whether `pattern` is a type test that no number can pass; testing a
     /// number against it runs no user code.
     fn rejects_numbers(&self, pattern: &Expr) -> bool {
@@ -1294,7 +1302,7 @@ impl TsPatternTransformer {
             Some(_) => false,
             None => match pattern {
                 Expr::Lit(Lit::Str(_) | Lit::Bool(_) | Lit::Null(_) | Lit::BigInt(_)) => true,
-                Expr::Ident(ident) => ident.sym == "undefined",
+                Expr::Ident(ident) => self.is_global_undefined(ident),
                 _ => false,
             },
         }
@@ -2213,6 +2221,44 @@ fn visit_chain_args(expr: &mut Expr, visitor: &mut impl VisitMut) {
     }
 }
 
+/// Whether an object literal in `pattern` creates other keys than its props
+/// list: `{ a: 1, a: 2 }` keeps only `a: 2`, `{ [k]: 1, a: 2 }` may too, and
+/// `{ __proto__: x }` sets a prototype.
+fn has_ambiguous_keys(pattern: &Expr) -> bool {
+    struct Finder(bool);
+    impl Visit for Finder {
+        fn visit_object_lit(&mut self, object: &ObjectLit) {
+            let mut seen = HashSet::new();
+            self.0 |= object
+                .props
+                .iter()
+                .filter_map(|prop| prop.as_prop()?.as_key_value())
+                .any(|key_value| match static_key(&key_value.key) {
+                    Some(key) => key == "__proto__" || !seen.insert(key),
+                    None => object.props.len() > 1,
+                });
+            object.visit_children_with(self);
+        }
+    }
+    let mut finder = Finder(false);
+    pattern.visit_with(&mut finder);
+    finder.0
+}
+
+/// The key a non-computed property name creates, if the plugin can spell it.
+fn static_key(key: &PropName) -> Option<String> {
+    match key {
+        PropName::Ident(ident) => Some(ident.sym.to_string()),
+        PropName::Str(str) => Some(str.value.to_string_lossy().into_owned()),
+        // Rust and JavaScript spell safe integers alike.
+        PropName::Num(num) if num.value.fract() == 0.0 && num.value < 2f64.powi(53) => {
+            Some(num.value.to_string())
+        }
+        PropName::BigInt(bigint) => Some(bigint.value.to_string()),
+        _ => None,
+    }
+}
+
 fn parse_with_arm(call: &CallExpr) -> Option<MatchArm> {
     if call.args.len() < 2 {
         return None;
@@ -2224,6 +2270,9 @@ fn parse_with_arm(call: &CallExpr) -> Option<MatchArm> {
         .map(|arg| arg.expr.clone())
         .collect::<Vec<_>>();
     let handler = args.pop()?;
+    if args.iter().any(|pattern| has_ambiguous_keys(pattern)) {
+        return None;
+    }
     // ts-pattern reads `.with(pattern, guard, handler)` only with exactly
     // three arguments; otherwise every argument before the handler is a pattern.
     let guard = if args.len() == 2 && is_function_expr(&args[1]) {
