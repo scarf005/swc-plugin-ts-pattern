@@ -1866,3 +1866,16 @@ test("P.union selections keep the key order of the pattern", async () => {
     ['{"x":1,"y":[2],"z":3}', '{"x":1,"y":2,"z":3}'],
   )
 })
+
+test("P.optional and P.array keep the key order of the pattern when they match nothing", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => [
+      match({}).with({ o: P.optional([P.select("x"), ...P.array(P.select("y")), P.select("z")]) }, (s) => Object.keys(s).join()).otherwise(() => 0),
+      match([]).with(P.array([P.select("x"), ...P.array(P.select("y")), P.select("z")]), (s) => Object.keys(s).join()).otherwise(() => 0),
+    ];
+  `,
+    ["x,y,z", "x,y,z"],
+  )
+})
