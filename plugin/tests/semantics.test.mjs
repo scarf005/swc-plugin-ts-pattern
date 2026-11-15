@@ -1408,3 +1408,52 @@ test("later arm arguments read bindings after earlier arms change them", async (
     ["new", "x", ["default", "build"]],
   )
 })
+
+test("later instanceOf arms read classes after earlier arms reassign them", async () => {
+  const fixed = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      class A {}
+      class B {}
+      return match(new B())
+        .with(P.instanceOf(A), () => { return "a"; })
+        .with(P.instanceOf(B), () => { return "b"; })
+        .otherwise(() => "other");
+    };
+  `,
+    "b",
+  )
+  assert.doesNotMatch(fixed, /\.with\(/)
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const log = [];
+      const get = () =>
+        match(1)
+          .with(P.when(() => { log.push("guard"); return false; }), () => "x")
+          .with(P.instanceOf(Later), () => "later")
+          .otherwise(() => "other");
+      let result;
+      try { result = get(); } catch (error) { result = error.constructor.name; }
+      class Later {}
+      return [result, log];
+    };
+  `,
+    ["ReferenceError", ["guard"]],
+  )
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    class A {}
+    class B {}
+    export const run = () =>
+      match(new A())
+        .with(P.when(() => { B = A; return false; }), () => { return "x"; })
+        .with(P.instanceOf(B), () => { return "b"; })
+        .otherwise(() => "other");
+  `,
+    "b",
+  )
+})

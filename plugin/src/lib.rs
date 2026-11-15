@@ -4,7 +4,7 @@ use std::{
 };
 
 use swc_core::{
-    common::{EqIgnoreSpan, SyntaxContext, DUMMY_SP},
+    common::{BytePos, EqIgnoreSpan, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
         utils::{prepend_stmts, private_ident},
@@ -33,6 +33,9 @@ struct TsPatternTransformer {
     namespaces: HashSet<Id>,
     const_bindings: HashMap<Id, Expr>,
     mutated_bindings: HashSet<Id>,
+    /// `const`, class and function names that nothing reassigns, with the
+    /// source position after which they hold their value.
+    stable_bindings: HashMap<Id, BytePos>,
     /// Temporaries that the current arm's tests assign; `arm_parts` declares
     /// them.
     pending_temps: RefCell<Vec<Ident>>,
@@ -162,6 +165,7 @@ impl VisitMut for TsPatternTransformer {
             return;
         }
         self.collect_const_bindings(module);
+        self.collect_stable_bindings(module);
         module.visit_mut_children_with(self);
     }
 
@@ -322,6 +326,19 @@ impl TsPatternTransformer {
         self.mutated_bindings = uses.changed;
     }
 
+    /// Records `const`, class and function names that nothing reassigns, with
+    /// the source position after which they are set.
+    fn collect_stable_bindings(&mut self, module: &Module) {
+        let mut writes = BindingWrites::default();
+        module.visit_with(&mut writes);
+        let BindingWrites {
+            mut declared,
+            assigned,
+        } = writes;
+        declared.retain(|id, _| !assigned.contains(id));
+        self.stable_bindings = declared;
+    }
+
     fn resolve_pattern_expr<'a>(&'a self, expr: &'a Expr) -> &'a Expr {
         let mut current = expr;
         for _ in 0..16 {
@@ -340,13 +357,17 @@ impl TsPatternTransformer {
     }
 
     /// Whether evaluating `expr` earlier gives the same value and runs no code:
-    /// literals, functions, module constants and globals.
+    /// literals, functions, module constants, classes and globals.
     fn is_stable_value(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Lit(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
             Expr::Paren(paren) => self.is_stable_value(&paren.expr),
             Expr::Ident(ident) => {
                 ident.ctxt == self.unresolved_ctxt
+                    || self
+                        .stable_bindings
+                        .get(&ident.to_id())
+                        .is_some_and(|set| ident.span.lo >= *set)
                     || (self.const_bindings.contains_key(&ident.to_id())
                         && !self.mutated_bindings.contains(&ident.to_id()))
             }
@@ -2115,6 +2136,59 @@ fn block_contains_effect(block: &BlockStmt) -> bool {
     let mut detector = EffectDetector { effect: false };
     block.visit_with(&mut detector);
     detector.effect
+}
+
+/// Collects `const`, class and function declarations, and every name that an
+/// assignment or update writes.
+#[derive(Default)]
+struct BindingWrites {
+    declared: HashMap<Id, BytePos>,
+    assigned: HashSet<Id>,
+}
+
+impl Visit for BindingWrites {
+    fn visit_class_decl(&mut self, class: &ClassDecl) {
+        self.declared
+            .insert(class.ident.to_id(), class.class.span.hi);
+        class.visit_children_with(self);
+    }
+
+    // Function declarations are set before any code in their scope runs.
+    fn visit_fn_decl(&mut self, function: &FnDecl) {
+        self.declared.insert(function.ident.to_id(), BytePos(0));
+        function.visit_children_with(self);
+    }
+
+    fn visit_var_decl(&mut self, var: &VarDecl) {
+        if var.kind == VarDeclKind::Const {
+            for decl in &var.decls {
+                if let Pat::Ident(ident) = &decl.name {
+                    self.declared.insert(ident.id.to_id(), decl.span.hi);
+                }
+            }
+        }
+        var.visit_children_with(self);
+    }
+
+    fn visit_assign_target(&mut self, target: &AssignTarget) {
+        let mut bindings = BindingNames(&mut self.assigned);
+        target.visit_with(&mut bindings);
+    }
+
+    fn visit_update_expr(&mut self, update: &UpdateExpr) {
+        if let Expr::Ident(ident) = &*update.arg {
+            self.assigned.insert(ident.to_id());
+        }
+        update.visit_children_with(self);
+    }
+}
+
+struct BindingNames<'a>(&'a mut HashSet<Id>);
+
+impl Visit for BindingNames<'_> {
+    fn visit_binding_ident(&mut self, ident: &BindingIdent) {
+        self.0.insert(ident.to_id());
+    }
 }
 
 struct EffectDetector {
