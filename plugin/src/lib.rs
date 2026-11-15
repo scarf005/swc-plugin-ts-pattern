@@ -70,6 +70,9 @@ struct TsPatternTransformer {
     namespaces: HashSet<Id>,
     const_bindings: HashMap<Id, Expr>,
     mutated_bindings: HashSet<Id>,
+    /// `const` patterns declared below module level, which resolve only in
+    /// regions that run after they are set.
+    local_consts: HashSet<Id>,
     /// `const`, class and function names that nothing reassigns, with the
     /// source regions that run only after they hold their value.
     stable_bindings: HashMap<Id, Vec<Span>>,
@@ -392,17 +395,26 @@ impl TsPatternTransformer {
         }
     }
 
-    /// Records module-level `const` patterns that are safe to inline.
+    /// Records `const` patterns that are safe to inline.
     fn collect_const_bindings(&mut self, module: &Module) {
-        let declarators = module.body.iter().flat_map(|item| match item {
-            ModuleItem::Stmt(Stmt::Decl(Decl::Var(var)))
-            | ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
-                decl: Decl::Var(var),
-                ..
-            })) if var.kind == VarDeclKind::Const => var.decls.as_slice(),
-            _ => &[],
-        });
+        let top: HashSet<Id> = module
+            .body
+            .iter()
+            .flat_map(|item| match item {
+                ModuleItem::Stmt(Stmt::Decl(Decl::Var(var)))
+                | ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(ExportDecl {
+                    decl: Decl::Var(var),
+                    ..
+                })) => var.decls.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|decl| decl.name.as_ident().map(|ident| ident.id.to_id()))
+            .collect();
+        let mut declarators = ConstDeclarators::default();
+        module.visit_with(&mut declarators);
         let bindings = declarators
+            .0
+            .iter()
             .filter_map(|decl| match (&decl.name, &decl.init) {
                 // A function is never a pattern itself; it only matters inside
                 // one, e.g. `P.when(fn)`.
@@ -417,6 +429,11 @@ impl TsPatternTransformer {
         if bindings.is_empty() {
             return;
         }
+        self.local_consts = bindings
+            .iter()
+            .map(|(id, _)| id.clone())
+            .filter(|id| !top.contains(id))
+            .collect();
         self.const_bindings.extend(bindings);
 
         let mut uses = BindingUses {
@@ -448,14 +465,34 @@ impl TsPatternTransformer {
                 Expr::TsConstAssertion(assertion) => &assertion.expr,
                 Expr::TsAs(assertion) => &assertion.expr,
                 Expr::TsSatisfies(assertion) => &assertion.expr,
-                Expr::Ident(ident) => match self.const_bindings.get(&ident.to_id()) {
-                    Some(next) if !self.mutated_bindings.contains(&ident.to_id()) => next,
-                    _ => return current,
+                Expr::Ident(ident) => match self.const_binding(ident) {
+                    Some(next) => next,
+                    None => return current,
                 },
                 _ => return current,
             };
         }
         current
+    }
+
+    /// The pattern an unchanged `const` holds where `ident` reads it. A
+    /// `const` below module level resolves only after its declaration runs.
+    fn const_binding(&self, ident: &Ident) -> Option<&Expr> {
+        let id = ident.to_id();
+        let ready = !self.local_consts.contains(&id) || self.in_stable_region(ident);
+        (ready && !self.mutated_bindings.contains(&id))
+            .then(|| self.const_bindings.get(&id))
+            .flatten()
+    }
+
+    fn in_stable_region(&self, ident: &Ident) -> bool {
+        self.stable_bindings
+            .get(&ident.to_id())
+            .is_some_and(|regions| {
+                regions
+                    .iter()
+                    .any(|region| region.lo <= ident.span.lo && ident.span.hi <= region.hi)
+            })
     }
 
     /// Whether evaluating `expr` earlier gives the same value and runs no code:
@@ -469,16 +506,8 @@ impl TsPatternTransformer {
             Expr::Ident(ident) => {
                 (ident.ctxt == self.unresolved_ctxt
                     && matches!(&*ident.sym, "undefined" | "NaN" | "Infinity"))
-                    || self
-                        .stable_bindings
-                        .get(&ident.to_id())
-                        .is_some_and(|regions| {
-                            regions.iter().any(|region| {
-                                region.lo <= ident.span.lo && ident.span.hi <= region.hi
-                            })
-                        })
-                    || (self.const_bindings.contains_key(&ident.to_id())
-                        && !self.mutated_bindings.contains(&ident.to_id()))
+                    || self.in_stable_region(ident)
+                    || self.const_binding(ident).is_some()
             }
             _ => false,
         }
@@ -490,7 +519,14 @@ impl TsPatternTransformer {
             Expr::TsAs(assertion) => self.safe_const_pattern(&assertion.expr),
             Expr::TsSatisfies(assertion) => self.safe_const_pattern(&assertion.expr),
             Expr::Lit(Lit::Regex(_)) => false,
-            Expr::Lit(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
+            Expr::Lit(_) | Expr::Fn(_) => true,
+            // An inlined arrow can land in another function, where `this` and
+            // `arguments` differ.
+            Expr::Arrow(arrow) => {
+                let mut outer = OuterFunctionRefs(false);
+                arrow.visit_with(&mut outer);
+                !outer.0
+            }
             Expr::Unary(unary) => self.safe_const_pattern(&unary.arg),
             Expr::Tpl(tpl) => tpl.exprs.is_empty(),
             Expr::Object(_) if has_ambiguous_keys(expr) => false,
@@ -2402,6 +2438,40 @@ impl Visit for BindingWrites {
             self.assigned.insert(ident.to_id());
         }
         update.visit_children_with(self);
+    }
+}
+
+/// Every `const` declarator with an initializer, in any scope.
+#[derive(Default)]
+struct ConstDeclarators(Vec<VarDeclarator>);
+
+impl Visit for ConstDeclarators {
+    fn visit_var_decl(&mut self, var: &VarDecl) {
+        if var.kind == VarDeclKind::Const {
+            self.0.extend(var.decls.iter().cloned());
+        }
+        var.visit_children_with(self);
+    }
+}
+
+/// Finds `this`, `arguments`, `super` and `new.target`.
+struct OuterFunctionRefs(bool);
+
+impl Visit for OuterFunctionRefs {
+    fn visit_this_expr(&mut self, _: &ThisExpr) {
+        self.0 = true;
+    }
+
+    fn visit_super(&mut self, _: &Super) {
+        self.0 = true;
+    }
+
+    fn visit_meta_prop_expr(&mut self, _: &MetaPropExpr) {
+        self.0 = true;
+    }
+
+    fn visit_ident(&mut self, ident: &Ident) {
+        self.0 |= &*ident.sym == "arguments";
     }
 }
 

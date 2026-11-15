@@ -17,9 +17,6 @@
   "lists.test.ts": {
     "no-terminal": 1
   },
-  "maps.test.ts": {
-    "unsupported-pattern": 1
-  },
   "matcher-protocol.test.ts": {
     "isMatching": 1,
     "unsupported-pattern": 4,
@@ -30,9 +27,6 @@
   },
   "narrow.test.ts": {
     "method-narrow": 2
-  },
-  "not.test.ts": {
-    "unsupported-pattern": 4
   },
   "objects.test.ts": {
     "isMatching": 2
@@ -55,8 +49,7 @@
     "unsupported-pattern": 9
   },
   "type-error.test.ts": {
-    "unstable-argument": 1,
-    "unsupported-pattern": 1
+    "unstable-argument": 1
   },
   "types.test.ts": {
     "no-terminal": 22,
