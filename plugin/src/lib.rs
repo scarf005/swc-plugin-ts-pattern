@@ -99,7 +99,6 @@ struct MatchArm {
 #[derive(Clone)]
 enum Fallback {
     Otherwise(Box<Expr>),
-    Matched(Box<Expr>),
     /// `.exhaustive()` on a chain started by this `match` callee.
     Exhaustive(Box<Expr>),
 }
@@ -143,13 +142,6 @@ impl Sink {
                 .rev()
                 .fold(fallback, |alt, (test, cons)| if_stmt(test, cons, Some(alt)))],
         }
-    }
-
-    fn end_case(&self, mut cons: Vec<Stmt>) -> Vec<Stmt> {
-        if let Sink::Assign(_) = self {
-            cons.push(break_stmt());
-        }
-        cons
     }
 }
 
@@ -741,7 +733,6 @@ impl TsPatternTransformer {
                 &MatchInputs::new(*chain.input),
                 chain.arms,
                 chain.fallback,
-                false,
             )?);
         }
         Some(stmts)
@@ -864,7 +855,6 @@ impl TsPatternTransformer {
                 &MatchInputs::new(*chain.input),
                 chain.arms,
                 fallback,
-                false,
             )?)),
         };
         let (params, args) = bindings
@@ -915,48 +905,19 @@ impl TsPatternTransformer {
             &MatchInputs::new(*chain.input),
             chain.arms,
             chain.fallback,
-            false,
         )?);
         Some(stmts)
     }
 
-    /// Lowers arms to statements. `known_match_object` means an enclosing
-    /// switch already proved `inputs.test` is an object.
+    /// Lowers arms to statements. Each arm tests the input on its own, as
+    /// ts-pattern reads the input again for every arm.
     fn compile_body(
         &mut self,
         sink: &Sink,
         inputs: &MatchInputs,
         arms: Vec<MatchArm>,
         fallback: Fallback,
-        known_match_object: bool,
     ) -> Option<Vec<Stmt>> {
-        if known_match_object {
-            if let Some((prefix, prefixed_arms)) = common_object_prefix(&arms) {
-                let cached = private_ident_for_prop("_tsPattern", &prefix);
-                let mut stmts = vec![const_stmt(
-                    cached.clone(),
-                    prop_access(inputs.test.clone(), &prefix)?,
-                )];
-                let inputs = MatchInputs {
-                    test: ident_expr(&cached),
-                    handler: inputs.handler.clone(),
-                };
-                stmts.extend(self.compile_body(sink, &inputs, prefixed_arms, fallback, false)?);
-                return Some(stmts);
-            }
-        }
-
-        if let Some(path) = common_switch_path(&arms, |pattern| self.runs_user_code(pattern)) {
-            return self.compile_path_switch(
-                sink,
-                inputs,
-                arms,
-                fallback,
-                &path,
-                known_match_object,
-            );
-        }
-
         let mut stmts = Vec::new();
         let mut branches = Vec::with_capacity(arms.len());
         for arm in arms {
@@ -971,54 +932,9 @@ impl TsPatternTransformer {
         Some(stmts)
     }
 
-    fn compile_path_switch(
-        &mut self,
-        sink: &Sink,
-        inputs: &MatchInputs,
-        arms: Vec<MatchArm>,
-        fallback: Fallback,
-        path: &[PropName],
-        known_match_object: bool,
-    ) -> Option<Vec<Stmt>> {
-        let discriminant = prop_access_path(inputs.test.clone(), path)?;
-        let guard = unary(
-            UnaryOp::Bang,
-            paren_expr(object_path_base_test(
-                inputs.test.clone(),
-                path,
-                known_match_object,
-            )?),
-        );
-        let default = self.fallback_stmt(sink, fallback.clone(), inputs.handler.clone());
-        let mut cases = Vec::new();
-
-        for (value, group) in group_arms_by_path(arms, path)? {
-            let (group_arms, group_fallback) = strip_group_arms(group, path, fallback.clone())?;
-            let cons = if group_arms.is_empty() {
-                vec![self.fallback_stmt(sink, group_fallback, inputs.handler.clone())]
-            } else {
-                self.compile_body(sink, inputs, group_arms, group_fallback, true)?
-            };
-            cases.push(switch_case(Some(value), sink.end_case(cons)));
-        }
-        cases.push(switch_case(None, sink.end_case(vec![default.clone()])));
-
-        let switch = switch_stmt(discriminant, cases);
-        Some(match sink {
-            Sink::Return => vec![
-                if_stmt(guard, Stmt::Block(block_stmt(vec![default])), None),
-                switch,
-            ],
-            Sink::Assign(_) => vec![if_stmt(guard, default, Some(switch))],
-        })
-    }
-
     fn fallback_stmt(&mut self, sink: &Sink, fallback: Fallback, input: Expr) -> Stmt {
         match fallback {
             Fallback::Otherwise(handler) => sink.deliver(handler_result(handler, vec![input])),
-            Fallback::Matched(handler) => {
-                sink.deliver(handler_result(handler, vec![input.clone(), input]))
-            }
             // ts-pattern throws its own error: `NonExhaustiveError` since 5.3,
             // a plain `Error` before.
             Fallback::Exhaustive(callee) => Stmt::Throw(ThrowStmt {
@@ -1624,15 +1540,8 @@ impl TsPatternTransformer {
     ) -> Option<Expr> {
         let undefined = undefined_expr(self.unresolved_ctxt);
         let mut inner_selections = Vec::new();
-        let mut test =
+        let test =
             self.pattern_test_with_selections(value.clone(), pattern, &mut inner_selections)?;
-        // The conditional selection below reads a nested value itself, so the
-        // test does not read it a second time.
-        for selection in &inner_selections {
-            if !selection.value.eq_ignore_span(&value) {
-                test.visit_mut_with(&mut DropRead(&selection.value));
-            }
-        }
         selections.extend(
             inner_selections
                 .into_iter()
@@ -1669,11 +1578,16 @@ impl TsPatternTransformer {
                     stmts.push(return_stmt(item_test));
                     BlockStmtOrExpr::BlockStmt(block_stmt(stmts))
                 };
+                // ts-pattern reads `length`, and calls `every` only on a
+                // non-empty array.
                 Some(and(
                     array_test,
-                    call_expr(
-                        member_expr(value, "every"),
-                        vec![arrow_expr(vec![Pat::Ident(item_ident.into())], body)],
+                    or(
+                        strict_eq(member_expr(value.clone(), "length"), num_lit(0.0)),
+                        call_expr(
+                            member_expr(value, "every"),
+                            vec![arrow_expr(vec![Pat::Ident(item_ident.into())], body)],
+                        ),
                     ),
                 ))
             }
@@ -1943,52 +1857,57 @@ impl TsPatternTransformer {
                     &key_value.value,
                     selections,
                 )?;
-                let test = self.read_once(
-                    &prop_access,
+                let test = self.read_property(
+                    prop_access,
                     &key_value.key,
                     test,
                     &mut selections[first_selection..],
                 );
+                // ts-pattern checks `key in value` before it reads an optional key too.
+                let in_object = prop_in_object(&key_value.key, value.clone())?;
                 let test = if self.is_optional_pattern(&key_value.value) {
-                    test
+                    seq_expr(in_object, test)
                 } else {
-                    let test = if as_bool_lit(&test) == Some(true) {
-                        seq_expr(prop_access, bool_lit(true))
-                    } else {
-                        test
-                    };
-                    and(prop_in_object(&key_value.key, value.clone())?, test)
+                    and(in_object, test)
                 };
                 Some(and(acc, test))
             })
     }
 
-    /// Makes `test` and the selections it added read `access` once, as
-    /// ts-pattern reads each property once per arm.
-    fn read_once(
+    /// Makes `test` and the selections it added read `access` once, first.
+    /// ts-pattern reads each property once per arm before it tests the
+    /// value, even when the pattern ignores the value.
+    fn read_property(
         &self,
-        access: &Expr,
+        access: Expr,
         key: &PropName,
         mut test: Expr,
         selections: &mut [SelectionBinding],
     ) -> Expr {
         let mut reads = CountReads {
-            target: access,
+            target: &access,
             count: 0,
         };
         test.visit_with(&mut reads);
-        if reads.count < 2 {
+        let test_reads = reads.count;
+        for selection in selections.iter() {
+            selection.value.visit_with(&mut reads);
+        }
+        if reads.count == 0 {
+            return seq_expr(access, test);
+        }
+        if reads.count == 1 && test_reads == 1 && starts_with_read(&test, &access) {
             return test;
         }
         let temp = private_ident_for_prop("_tsPattern", key);
-        test.visit_mut_with(&mut ReadOnce::new(access.clone(), temp.clone(), true));
+        test.visit_mut_with(&mut ReadOnce::new(access.clone(), temp.clone(), false));
         for selection in selections {
             selection
                 .value
                 .visit_mut_with(&mut ReadOnce::new(access.clone(), temp.clone(), false));
         }
-        self.pending_temps.borrow_mut().push(temp);
-        test
+        self.pending_temps.borrow_mut().push(temp.clone());
+        seq_expr(assign_expr(temp, access), test)
     }
 
     fn is_optional_pattern(&self, pattern: &Expr) -> bool {
@@ -2037,7 +1956,8 @@ impl TsPatternTransformer {
                 let first_selection = selections.len();
                 let test =
                     self.pattern_test_with_selections(item.clone(), &elem.expr, selections)?;
-                let test = self.read_once(&item, &index, test, &mut selections[first_selection..]);
+                let test =
+                    self.read_property(item, &index, test, &mut selections[first_selection..]);
                 Some(and(acc, test))
             })
     }
@@ -2855,22 +2775,41 @@ impl VisitMut for ReadOnce {
     }
 }
 
-/// Replaces `(target, true)`, a test that only reads `target`, with `true`.
-struct DropRead<'a>(&'a Expr);
-
-impl VisitMut for DropRead<'_> {
-    fn visit_mut_expr(&mut self, expr: &mut Expr) {
-        if let Expr::Paren(ParenExpr { expr: inner, .. }) = expr {
-            if let Expr::Seq(SeqExpr { exprs, .. }) = &**inner {
-                if let [read, result] = exprs.as_slice() {
-                    if (**read).eq_ignore_span(self.0) && as_bool_lit(result) == Some(true) {
-                        *expr = bool_lit(true);
-                        return;
-                    }
-                }
-            }
+/// Whether evaluating `expr` reads `target` before it reads or runs anything
+/// else that code could observe.
+fn starts_with_read(expr: &Expr, target: &Expr) -> bool {
+    if expr.eq_ignore_span(target) {
+        return true;
+    }
+    match expr {
+        Expr::Paren(paren) => starts_with_read(&paren.expr, target),
+        Expr::Bin(bin) => starts_with_read(&bin.left, target),
+        Expr::Unary(unary) => starts_with_read(&unary.arg, target),
+        Expr::Seq(seq) => starts_with_read(&seq.exprs[0], target),
+        Expr::Cond(cond) => starts_with_read(&cond.test, target),
+        Expr::Member(member) => starts_with_read(&member.obj, target),
+        Expr::Call(CallExpr {
+            callee: Callee::Expr(callee),
+            args,
+            ..
+        }) => {
+            starts_with_read(callee, target)
+                || (is_quiet_callee(callee)
+                    && args.first().is_some_and(|arg| {
+                        arg.spread.is_none() && starts_with_read(&arg.expr, target)
+                    }))
         }
-        expr.visit_mut_children_with(self);
+        _ => false,
+    }
+}
+
+/// Whether evaluating `callee` reads nothing that code could observe.
+fn is_quiet_callee(callee: &Expr) -> bool {
+    match callee {
+        Expr::Ident(_) | Expr::Arrow(_) | Expr::Fn(_) => true,
+        Expr::Paren(paren) => is_quiet_callee(&paren.expr),
+        Expr::Member(member) => matches!(&*member.obj, Expr::Ident(_)),
+        _ => false,
     }
 }
 
@@ -3062,17 +3001,6 @@ fn can_inline_input(expr: &Expr) -> bool {
     matches!(expr, Expr::Ident(_) | Expr::Lit(_))
 }
 
-fn prop_name_eq(left: &PropName, right: &PropName) -> bool {
-    match (left, right) {
-        (PropName::Ident(left), PropName::Ident(right)) => left.sym == right.sym,
-        (PropName::Str(left), PropName::Str(right)) => left.value == right.value,
-        (PropName::Num(left), PropName::Num(right)) => left.value == right.value,
-        (PropName::BigInt(left), PropName::BigInt(right)) => left.value == right.value,
-        (PropName::Computed(_), PropName::Computed(_)) => false,
-        _ => false,
-    }
-}
-
 fn is_switchable_arm(arm: &MatchArm) -> bool {
     arm.guard.is_none()
         && arm
@@ -3165,78 +3093,6 @@ fn prop_access(value: Expr, key: &PropName) -> Option<Expr> {
     }
 }
 
-fn prop_access_path(value: Expr, path: &[PropName]) -> Option<Expr> {
-    let mut current = value;
-    for segment in path {
-        current = prop_access(current, segment)?;
-    }
-    Some(current)
-}
-
-fn object_path_base_test(input: Expr, path: &[PropName], known_input_object: bool) -> Option<Expr> {
-    let mut test = bool_lit(true);
-    let mut current = input;
-
-    for segment in path {
-        let object_test = if known_input_object && matches!(current, Expr::Ident(_)) {
-            bool_lit(true)
-        } else {
-            and(
-                strict_ne(current.clone(), null_lit()),
-                typeof_eq(current.clone(), "object"),
-            )
-        };
-        test = and(
-            test,
-            and(object_test, prop_in_object(segment, current.clone())?),
-        );
-        current = prop_access(current, segment)?;
-    }
-
-    Some(test)
-}
-
-fn common_object_prefix(arms: &[MatchArm]) -> Option<(PropName, Vec<MatchArm>)> {
-    if arms.is_empty() || arms.iter().any(|arm| arm.patterns.len() != 1) {
-        return None;
-    }
-
-    let (prefix, _) = single_object_prop_with_object_value(&arms[0].patterns[0])?;
-    let mut stripped = Vec::new();
-
-    for arm in arms {
-        let (key, value) = single_object_prop_with_object_value(&arm.patterns[0])?;
-        if !prop_name_eq(&prefix, &key) {
-            return None;
-        }
-
-        stripped.push(MatchArm {
-            patterns: vec![Box::new(value.clone())],
-            guard: arm.guard.clone(),
-            handler: arm.handler.clone(),
-        });
-    }
-
-    Some((prefix, stripped))
-}
-
-fn single_object_prop_with_object_value(pattern: &Expr) -> Option<(PropName, &Expr)> {
-    let Expr::Object(object) = pattern else {
-        return None;
-    };
-    if object.props.len() != 1 {
-        return None;
-    }
-    let PropOrSpread::Prop(prop) = &object.props[0] else {
-        return None;
-    };
-    let Prop::KeyValue(key_value) = &**prop else {
-        return None;
-    };
-    matches!(&*key_value.value, Expr::Object(_))
-        .then_some((key_value.key.clone(), &key_value.value))
-}
-
 fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
     let name = match prop {
         PropName::Ident(ident) => ident.sym.to_string(),
@@ -3256,61 +3112,6 @@ fn private_ident_for_prop(prefix: &str, prop: &PropName) -> Ident {
     private_ident!(DUMMY_SP, format!("{prefix}{suffix}"))
 }
 
-/// ts-pattern tests keys before the switch key first, so a path must not
-/// skip user code in them.
-fn common_switch_path(
-    arms: &[MatchArm],
-    runs_user_code: impl Fn(&Expr) -> bool,
-) -> Option<Vec<PropName>> {
-    if arms.is_empty()
-        || arms
-            .iter()
-            .any(|arm| arm.guard.is_some() || arm.patterns.len() != 1)
-    {
-        return None;
-    }
-
-    let mut paths = Vec::new();
-    collect_literal_paths(&arms[0].patterns[0], Vec::new(), &mut paths);
-    paths.sort_by_key(|path| path.len());
-
-    paths.into_iter().find(|path| {
-        let mut values = arms
-            .iter()
-            .filter_map(|arm| literal_at_path(&arm.patterns[0], path));
-        let Some(first) = values.next() else {
-            return false;
-        };
-        values.any(|value| !switch_literals_eq(first, value))
-            && arms.iter().all(|arm| {
-                literal_at_path(&arm.patterns[0], path).is_some()
-                    && !runs_code_before_path(&arm.patterns[0], path, &runs_user_code)
-            })
-    })
-}
-
-fn runs_code_before_path(
-    pattern: &Expr,
-    path: &[PropName],
-    runs_user_code: &impl Fn(&Expr) -> bool,
-) -> bool {
-    let (Expr::Object(object), Some(segment)) = (pattern, path.first()) else {
-        return false;
-    };
-    for prop in own_keys_order(object) {
-        let Some(key_value) = prop.as_prop().and_then(|prop| prop.as_key_value()) else {
-            continue;
-        };
-        if prop_name_eq(&key_value.key, segment) {
-            return runs_code_before_path(&key_value.value, &path[1..], runs_user_code);
-        }
-        if runs_user_code(&key_value.value) {
-            return true;
-        }
-    }
-    false
-}
-
 /// ts-pattern tests keys in `Reflect.ownKeys` order: array indexes in
 /// ascending order, then the other keys in source order.
 fn own_keys_order(object: &ObjectLit) -> Vec<&PropOrSpread> {
@@ -3328,170 +3129,6 @@ fn own_keys_order(object: &ObjectLit) -> Vec<&PropOrSpread> {
 fn array_index(key: &str) -> Option<u32> {
     let index = key.parse::<u32>().ok()?;
     (index != u32::MAX && index.to_string() == key).then_some(index)
-}
-
-fn collect_literal_paths(pattern: &Expr, prefix: Vec<PropName>, paths: &mut Vec<Vec<PropName>>) {
-    let Expr::Object(object) = pattern else {
-        return;
-    };
-
-    for prop in &object.props {
-        let PropOrSpread::Prop(prop) = prop else {
-            continue;
-        };
-        let Prop::KeyValue(key_value) = &**prop else {
-            continue;
-        };
-
-        let mut next = prefix.clone();
-        next.push(key_value.key.clone());
-
-        if is_switch_literal(&key_value.value) {
-            paths.push(next);
-            continue;
-        }
-
-        collect_literal_paths(&key_value.value, next, paths);
-    }
-}
-
-fn literal_at_path<'a>(pattern: &'a Expr, path: &[PropName]) -> Option<&'a Expr> {
-    let mut current = pattern;
-
-    for (index, segment) in path.iter().enumerate() {
-        let Expr::Object(object) = current else {
-            return None;
-        };
-        let key_value = object.props.iter().find_map(|prop| {
-            let PropOrSpread::Prop(prop) = prop else {
-                return None;
-            };
-            let Prop::KeyValue(key_value) = &**prop else {
-                return None;
-            };
-            prop_name_eq(&key_value.key, segment).then_some(key_value)
-        })?;
-
-        if index + 1 == path.len() {
-            return is_switch_literal(&key_value.value).then_some(&*key_value.value);
-        }
-
-        current = &key_value.value;
-    }
-
-    None
-}
-
-fn strip_group_arms(
-    arms: Vec<MatchArm>,
-    path: &[PropName],
-    inherited_fallback: Fallback,
-) -> Option<(Vec<MatchArm>, Fallback)> {
-    let mut stripped = Vec::new();
-    let mut fallback = inherited_fallback;
-
-    for arm in arms {
-        let pattern = arm.patterns.into_iter().next()?;
-        match strip_literal_path(&pattern, path)? {
-            Some(pattern) => stripped.push(MatchArm {
-                patterns: vec![Box::new(pattern)],
-                guard: arm.guard,
-                handler: arm.handler,
-            }),
-            None => {
-                fallback = Fallback::Matched(arm.handler);
-                break;
-            }
-        }
-    }
-
-    Some((stripped, fallback))
-}
-
-fn strip_literal_path(pattern: &Expr, path: &[PropName]) -> Option<Option<Expr>> {
-    let Expr::Object(object) = pattern else {
-        return None;
-    };
-
-    let mut props = Vec::new();
-
-    for prop in &object.props {
-        let PropOrSpread::Prop(prop) = prop else {
-            props.push(prop.clone());
-            continue;
-        };
-        let Prop::KeyValue(key_value) = &**prop else {
-            props.push(PropOrSpread::Prop(prop.clone()));
-            continue;
-        };
-
-        if !prop_name_eq(&key_value.key, &path[0]) {
-            props.push(PropOrSpread::Prop(prop.clone()));
-            continue;
-        }
-
-        if path.len() == 1 {
-            continue;
-        }
-
-        if let Some(stripped) = strip_literal_path(&key_value.value, &path[1..])? {
-            props.push(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                key: key_value.key.clone(),
-                value: Box::new(stripped),
-            }))));
-        }
-    }
-
-    (!props.is_empty())
-        .then_some(Some(Expr::Object(ObjectLit {
-            span: object.span,
-            props,
-        })))
-        .or(Some(None))
-}
-
-fn group_arms_by_path(
-    arms: Vec<MatchArm>,
-    path: &[PropName],
-) -> Option<Vec<(Expr, Vec<MatchArm>)>> {
-    let mut groups: Vec<(Expr, Vec<MatchArm>)> = Vec::new();
-
-    for arm in arms {
-        let value = literal_at_path(&arm.patterns[0], path)?.clone();
-        if let Some((_, grouped_arms)) = groups
-            .iter_mut()
-            .find(|(group_value, _)| switch_literals_eq(group_value, &value))
-        {
-            grouped_arms.push(arm);
-        } else {
-            groups.push((value, vec![arm]));
-        }
-    }
-
-    Some(groups)
-}
-
-fn switch_literals_eq(left: &Expr, right: &Expr) -> bool {
-    match (left, right) {
-        (Expr::Lit(Lit::Str(left)), Expr::Lit(Lit::Str(right))) => left.value == right.value,
-        (Expr::Lit(Lit::Num(left)), Expr::Lit(Lit::Num(right))) => left.value == right.value,
-        (Expr::Lit(Lit::Bool(left)), Expr::Lit(Lit::Bool(right))) => left.value == right.value,
-        (Expr::Lit(Lit::BigInt(left)), Expr::Lit(Lit::BigInt(right))) => left.value == right.value,
-        (Expr::Lit(Lit::Null(_)), Expr::Lit(Lit::Null(_))) => true,
-        (
-            Expr::Unary(UnaryExpr {
-                op: UnaryOp::Minus,
-                arg: left,
-                ..
-            }),
-            Expr::Unary(UnaryExpr {
-                op: UnaryOp::Minus,
-                arg: right,
-                ..
-            }),
-        ) => switch_literals_eq(left, right),
-        _ => false,
-    }
 }
 
 fn const_stmt(ident: Ident, init: Expr) -> Stmt {
@@ -3547,13 +3184,6 @@ fn switch_stmt(discriminant: Expr, cases: Vec<SwitchCase>) -> Stmt {
         span: DUMMY_SP,
         discriminant: Box::new(discriminant),
         cases,
-    })
-}
-
-fn break_stmt() -> Stmt {
-    Stmt::Break(BreakStmt {
-        span: DUMMY_SP,
-        label: None,
     })
 }
 
@@ -4082,10 +3712,17 @@ fn record_selection_match(
     let matched = private_ident!("_tsPatternRecordMatched");
     let mut value_test = value_test;
     let mut value_captures = Vec::new();
+    let mut capture_decls = Vec::new();
     let mut value_arrays = Vec::new();
     for selection in value_selections {
-        let capture = private_ident!("_tsPatternRecordSelectedValue");
         let array = private_ident!("_tsPatternRecordSelectedValues");
+        value_arrays.push(array);
+        // A temp already holds the value that the test reads.
+        if let Expr::Ident(read) = &selection.value {
+            value_captures.push(read.clone());
+            continue;
+        }
+        let capture = private_ident!("_tsPatternRecordSelectedValue");
         let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
         value_test.visit_mut_with(&mut replacer);
         if !replacer.found {
@@ -4094,8 +3731,8 @@ fn record_selection_match(
                 value_test,
             );
         }
+        capture_decls.push(capture.clone());
         value_captures.push(capture);
-        value_arrays.push(array);
     }
     let selection = record_selection_object(
         &selected_keys,
@@ -4188,7 +3825,7 @@ fn record_selection_match(
         })
     };
     let mut setup_statements = vec![const_stmt(selected_keys, empty_array())];
-    setup_statements.extend(value_captures.into_iter().map(let_decl));
+    setup_statements.extend(capture_decls.into_iter().map(let_decl));
     setup_statements.extend(
         value_arrays
             .into_iter()
@@ -4360,11 +3997,11 @@ class C { constructor(x: any) { "use strict"; this.v = [match(x).with({ a: { b: 
         );
 
         assert!(
-            output.contains("{\n    \"worklet\";\n    \"use strict\";\n    let _tsPatternA;"),
+            output.contains("{\n    \"worklet\";\n    \"use strict\";\n    let _tsPattern"),
             "{output}"
         );
         assert!(
-            output.contains("{\n        \"use strict\";\n        let _tsPatternA;"),
+            output.contains("{\n        \"use strict\";\n        let _tsPattern"),
             "{output}"
         );
     }
@@ -4379,19 +4016,6 @@ export const run = (command: "start" | "stop" | "pause" | "unknown") => match(co
         assert!(output.contains("=>{"), "{output}");
         assert!(output.contains("switch"), "{output}");
         assert!(!output.contains("=> (()=>"), "{output}");
-    }
-
-    #[test]
-    fn emits_switch_block_for_arrow_body_object_discriminant_match() {
-        let output = transform(
-            r#"import { match } from "ts-pattern";
-export const run = (content: { type: "text" } | { type: "img" } | { type: "video" }) => match(content).with({ type: "text" }, () => "<p>...</p>").with({ type: "img" }, () => "<img ... />").with({ type: "video" }, () => "<video ... />").exhaustive();"#,
-        );
-
-        assert!(output.contains("=>{"), "{output}");
-        assert!(output.contains("switch(_tsPatternInput.type)"), "{output}");
-        assert!(output.contains("case \"text\""), "{output}");
-        assert!(!output.contains("=>()=>"), "{output}");
     }
 
     #[test]
@@ -4411,27 +4035,6 @@ export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img
     }
 
     #[test]
-    fn emits_nested_switch_for_shared_object_discriminants() {
-        let output = transform(
-            r#"import { match, P } from "ts-pattern";
-export const run = (result: { type: "error" } | { type: "ok"; data: { type: "img"; src: string } } | { type: "ok"; data: { type: "text"; content: string } }) => match(result).with({ type: "error" }, () => "error").with({ type: "ok", data: { type: "text" } }, ({ data }) => data.content).with({ type: "ok", data: { type: "img", src: P.select() } }, (src) => src).exhaustive();"#,
-        );
-
-        assert!(output.contains("switch(_tsPatternInput.type)"), "{output}");
-        assert!(
-            output.contains("const _tsPatternData = _tsPatternInput.data"),
-            "{output}"
-        );
-        assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
-        assert!(
-            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
-            "{output}"
-        );
-        assert!(output.contains("return _tsPatternSelected"), "{output}");
-        assert!(!output.contains("match(result).with"), "{output}");
-    }
-
-    #[test]
     fn rewrites_exhaustive_match_variable_initializer_in_block_body() {
         let output = transform(
             r#"import { match, P } from "ts-pattern";
@@ -4445,39 +4048,15 @@ export const render = (result: { type: "error" } | { type: "ok"; data: { type: "
             output.contains("const html = _tsPatternResult;"),
             "{output}"
         );
-        assert!(output.contains("switch(result.type)"), "{output}");
         assert!(
-            output.contains("const _tsPatternData = result.data"),
+            output.contains("\"data\" in result && ((_tsPatternData = result.data)"),
             "{output}"
         );
-        assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
+        assert!(
+            output.contains("_tsPatternResult = _tsPatternSrc"),
+            "{output}"
+        );
         assert!(!output.contains("match(result).with"), "{output}");
-    }
-
-    #[test]
-    fn caches_nested_object_discriminants_without_repeating_parent_guards() {
-        let output = transform(
-            r#"import { match, P } from "ts-pattern";
-export const render = (result: { type: "error" } | { type: "ok"; data: { type: "img"; src: string } } | { type: "ok"; data: { type: "text"; content: string } }) => {
-  const html = match(result).with({ type: "error" }, () => "error").with({ type: "ok", data: { type: "text" } }, ({ data }) => data.content).with({ type: "ok", data: { type: "img", src: P.select() } }, (src) => src).exhaustive();
-  return html;
-};"#,
-        );
-
-        assert!(
-            output.contains("const _tsPatternData = result.data"),
-            "{output}"
-        );
-        assert!(output.contains("switch(_tsPatternData.type)"), "{output}");
-        assert!(
-            output.contains("_tsPatternResult = result.data.content"),
-            "{output}"
-        );
-        assert!(
-            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
-            "{output}"
-        );
-        assert!(!output.contains("result !== null && typeof result === \"object\" && \"data\" in result && result.data !== null"), "{output}");
     }
 
     #[test]
@@ -4672,11 +4251,11 @@ const result = match(input).with({ type: "ok", data: { type: "img", src: P.selec
 
         assert!(!output.contains("match(input).with"), "{output}");
         assert!(
-            output.contains("(_tsPatternData = input.data) !== null"),
+            output.contains("(_tsPatternData = input.data), _tsPatternData !== null"),
             "{output}"
         );
         assert!(
-            output.contains("(_tsPatternSelected = _tsPatternData.src)"),
+            output.contains("(_tsPatternSrc = _tsPatternData.src)"),
             "{output}"
         );
     }
@@ -4702,7 +4281,7 @@ const result = match(input).with(pattern, (value) => value[0]).with(P.number.gt(
 
         assert!(output.contains("input[0] === \"a\""), "{output}");
         assert!(
-            output.contains("(_tsPatternValue = input[1]) === \"a\" || _tsPatternValue === \"b\""),
+            output.contains("((_tsPatternValue = input[1]), _tsPatternValue === \"a\" || _tsPatternValue === \"b\")"),
             "{output}"
         );
         assert!(
