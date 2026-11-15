@@ -111,11 +111,15 @@ type CodeViewerProps = {
   uri: string
 }
 
+const getSystemTheme = (): Theme =>
+  matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "white"
+
 const getInitialTheme = (): Theme => {
   try {
-    return localStorage.getItem(themeStorageKey) === "dark" ? "dark" : "white"
+    const stored = localStorage.getItem(themeStorageKey)
+    return stored === "dark" || stored === "white" ? stored : getSystemTheme()
   } catch {
-    return "white"
+    return getSystemTheme()
   }
 }
 

@@ -10,6 +10,7 @@
   --syntax-comment: #777777;
   --syntax-type: #7a3e9d;
   --syntax-punctuation: #555555;
+  color-scheme: light;
   font-family: "Sarasa Mono K Nerd Font", system-ui, sans-serif;
   color: var(--fg);
   background: var(--bg);
@@ -27,6 +28,7 @@
   --syntax-comment: #888888;
   --syntax-type: #d6a7ff;
   --syntax-punctuation: #bbbbbb;
+  color-scheme: dark;
 }
 
 body {

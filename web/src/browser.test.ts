@@ -1,12 +1,15 @@
 import { assert, test } from "vite-plus/test"
 import { createServer } from "vite-plus"
 import { fileURLToPath } from "node:url"
-import { chromium, type Page } from "playwright"
+import { type BrowserContextOptions, chromium, type Page } from "playwright"
 import type { editor } from "monaco-editor/editor/editor.api.js"
 
 const webRoot = new URL("../", import.meta.url)
 
-const withPlayground = async (run: (page: Page, origin: string) => Promise<void>) => {
+const withPlayground = async (
+  run: (page: Page, origin: string) => Promise<void>,
+  pageOptions?: BrowserContextOptions,
+) => {
   const server = await createServer({
     root: fileURLToPath(webRoot),
     server: { host: "127.0.0.1", port: 0 },
@@ -17,7 +20,7 @@ const withPlayground = async (run: (page: Page, origin: string) => Promise<void>
     const origin = server.resolvedUrls?.local[0]?.replace(/\/$/, "")
     if (!origin) throw new Error("Playground dev server has no URL")
     browser = await chromium.launch()
-    const page = await browser.newPage()
+    const page = await browser.newPage(pageOptions)
     // Cold WASM compilation also shares CPU with other CI jobs.
     page.setDefaultTimeout(120_000)
     await run(page, origin)
@@ -174,3 +177,20 @@ test("playground keeps editors usable after rendering multi-row results", () =>
       `Collapsed editors: ${heights.join(", ")}`,
     )
   }))
+
+test("playground follows the system dark scheme until a theme is chosen", () =>
+  withPlayground(
+    async (page, origin) => {
+      await page.goto(`${origin}/examples/literals`)
+      const theme = page.getByRole("combobox", { name: "Theme" })
+      const colorScheme = () =>
+        page.evaluate(() => getComputedStyle(document.documentElement).colorScheme)
+      assert.deepEqual(await theme.inputValue(), "dark")
+      assert.deepEqual(await colorScheme(), "dark")
+      await theme.selectOption("white")
+      await page.reload()
+      assert.deepEqual(await theme.inputValue(), "white")
+      assert.deepEqual(await colorScheme(), "light")
+    },
+    { colorScheme: "dark" },
+  ))
