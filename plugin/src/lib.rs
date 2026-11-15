@@ -774,7 +774,7 @@ impl TsPatternTransformer {
     }
 
     fn compile_chain(&mut self, chain: MatchChain) -> Option<Expr> {
-        if needs_prepared_expression(self, &chain) {
+        if needs_prepared_expression(self, &chain) || !can_inline_input(&chain.input) {
             return self.compile_prepared_expression(chain);
         }
         self.compile_ternary_chain(chain, true)
@@ -4217,14 +4217,15 @@ const result = match(input).with({ type: "text" }, () => "text").with({ type: "i
     }
 
     #[test]
-    fn leaves_effectful_input_unchanged_to_avoid_iife() {
+    fn passes_effectful_input_once_to_an_arrow_at_module_scope() {
         let output = transform(
             r#"import { match } from "ts-pattern";
 const result = match(next()).with("a", () => 1).otherwise(() => 0);"#,
         );
 
-        assert!(output.contains("match(next()).with"), "{output}");
-        assert!(!output.contains("(()=>{"), "{output}");
+        assert!(!output.contains(".with("), "{output}");
+        assert!(output.matches("next()").count() == 1, "{output}");
+        assert!(output.contains(")(next())"), "{output}");
     }
 
     #[test]

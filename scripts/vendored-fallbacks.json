@@ -9,11 +9,10 @@
     "unsupported-pattern": 3
   },
   "exhaustive-match.test.ts": {
-    "unsupported-pattern": 10,
     "unstable-argument": 1
   },
   "intersection-and-union.test.ts": {
-    "unsupported-pattern": 7
+    "unsupported-pattern": 6
   },
   "is-matching.test.ts": {
     "isMatching": 4
@@ -30,24 +29,20 @@
     "no-terminal": 2
   },
   "multiple-patterns.test.ts": {
-    "no-terminal": 1,
-    "unsupported-pattern": 3
+    "no-terminal": 1
   },
   "narrow.test.ts": {
     "method-narrow": 2
   },
-  "nesting.test.ts": {
-    "unsupported-pattern": 10
-  },
   "not.test.ts": {
-    "unsupported-pattern": 7
+    "unsupported-pattern": 4
   },
   "objects.test.ts": {
     "isMatching": 2
   },
   "optional.test.ts": {
     "no-terminal": 4,
-    "unsupported-pattern": 3
+    "unsupported-pattern": 1
   },
   "primitive-values.test.ts": {
     "unsupported-pattern": 1
@@ -60,7 +55,7 @@
     "no-terminal": 1
   },
   "select.test.ts": {
-    "unsupported-pattern": 11
+    "unsupported-pattern": 9
   },
   "type-error.test.ts": {
     "unstable-argument": 1,
@@ -68,7 +63,7 @@
   },
   "types.test.ts": {
     "no-terminal": 22,
-    "unsupported-pattern": 2
+    "unsupported-pattern": 1
   },
   "variadic-tuples.test.ts": {
     "unsupported-pattern": 12,
