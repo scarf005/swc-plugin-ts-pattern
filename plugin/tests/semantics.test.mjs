@@ -1447,6 +1447,64 @@ test("later instanceOf arms read classes after earlier arms reassign them", asyn
     `
     import { match, P } from "ts-pattern";
     class A {}
+    const log = [];
+    const early = (() => { try { return get(); } catch (error) { return error.constructor.name; } })();
+    class Later {}
+    function get() {
+      return match(1)
+        .with(P.when(() => { log.push("guard"); return false; }), () => "x")
+        .with(P.instanceOf(Later), () => "later")
+        .otherwise(() => "other");
+    }
+    const skipped = (() => {
+      let result;
+      try {
+        switch (1) {
+          case 0: const Skipped = A; break;
+          case 1: result = match(1)
+            .with(P.when(() => { log.push("case"); return false; }), () => "x")
+            .with(P.instanceOf(Skipped), () => "skipped")
+            .otherwise(() => "other");
+        }
+      } catch (error) { result = error.constructor.name; }
+      return result;
+    })();
+    export const run = () => [early, skipped, log];
+  `,
+    ["ReferenceError", "ReferenceError", ["guard", "case"]],
+  )
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    class A {}
+    class B {}
+    function C() {}
+    export const run = () => {
+      let it;
+      function* gen() {
+        function D() {}
+        yield () => match(new A())
+          .with(P.when(() => { it.next(); return false; }), () => "x")
+          .with(P.instanceOf(D), () => "d")
+          .otherwise(() => "other");
+        var D = A;
+        yield;
+      }
+      it = gen();
+      const redeclared = it.next().value();
+      const loops = match(new A())
+        .with(P.when(() => { for (B of [A]); for ([C] of [[A]]); return false; }), () => "x")
+        .with(P.instanceOf(B), P.instanceOf(C), () => "loop")
+        .otherwise(() => "other");
+      return [redeclared, loops];
+    };
+  `,
+    ["d", "loop"],
+  )
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    class A {}
     class B {}
     export const run = () =>
       match(new A())
