@@ -1553,3 +1553,31 @@ test("later instanceOf arms read classes after earlier arms reassign them", asyn
     "b",
   )
 })
+
+// `.exhaustive(handler)` calls `handler` only on 5.7 and later, so each
+// version compares with its own raw run.
+test("terminal methods compile and match the runtime on every version", async () => {
+  const source = `
+    import { match, P } from "ts-pattern";
+    const attempt = (run) => { try { return run(); } catch (error) { return error.constructor.name; } };
+    export const run = () => [1, "a", null].map((input) => {
+      const log = [];
+      const show = (value) => value;
+      return [
+        attempt(() => {
+          match(input).with(1, () => log.push("statement")).exhaustive();
+          return log;
+        }),
+        attempt(() => match(input).with(1, () => "run").run()),
+        attempt(() => match(input).returnType().with(1, () => "typed").exhaustive()),
+        attempt(() => match(input).with(1, () => "handled").exhaustive((value) => ["unmatched", value])),
+        attempt(() => show(match(input).with(1, () => "argument").with(P.string, () => "string").exhaustive())),
+      ];
+    });
+  `
+  const [raw, compiled] = await Promise.all([compile(source, false), compile(source, true)])
+  assert.doesNotMatch(compiled, /\.with\(/, compiled)
+  for (const version of versions) {
+    assert.deepEqual(load(compiled, version)(), load(raw, version)(), `${version}: ${compiled}`)
+  }
+})
