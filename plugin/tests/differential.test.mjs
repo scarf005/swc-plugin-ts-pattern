@@ -53,6 +53,8 @@ const chains = {
     'match(input).with(P.intersection({ a: P.number }, { b: P.string }), () => 1).with({ c: P.intersection(P.any, P.when((v) => (log.push("when c"), v !== 1)), P.select()) }, (c) => c).with(P.intersection({ a: P.select("x") }, { b: P.select("y") }), (s) => s).with(P.number.and(P.select()), (n) => n).otherwise(() => 0)',
   unionSelections:
     'match(input).with({ a: P.union({ b: P.when((v) => (log.push("when b"), v !== 1)), c: P.select("x") }, { c: P.select("x") }), kind: P.select("y") }, (s) => s).with(P.union({ a: P.select() }, P.array(P.select())), (v) => v).with({ c: P.optional({ b: P.select() }).or({ a: P.select() }) }, (v) => v).otherwise(() => 0)',
+  unionNames:
+    'match(input).with({ value: P.union({ kind: "a", a: P.select("n") }, { b: P.select("s"), kind: "b" }) }, (s) => s).with(P.union({ a: P.select("x"), b: P.when((v) => (log.push("when b"), v !== 1)) }, { c: P.select("y") }), (s) => s).with(P.union(P.array(P.select("x")), { a: P.optional(P.select("y")) }).or(P.select("z", P.string)), (s) => s).otherwise(() => 0)',
   shape:
     'match(input).with(P.shape({ a: P.when((v) => (log.push("when a"), v === 1)) }).and({ b: P.select() }), (b) => b).with(P.shape({ kind: P.string }).or(P.shape([P._])), () => "shape").otherwise(() => 0)',
   exhaustive:
