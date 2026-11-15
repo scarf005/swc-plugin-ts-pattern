@@ -41,6 +41,8 @@ const chains = {
     'match(input).with({ kind: "a", value: P.select() }, { kind: "b", value: P.select() }, (v) => v).otherwise(() => 0)',
   variadicTuples:
     'match(input).with([1, ...P.array(P.number), "a"], () => "mid").with([...P.array(P.string).select()], (s) => s).with([P.any, ...P.array(), P.any], () => "two").with([P.select(), ...P.array()], (h) => h).otherwise(() => 0)',
+  arraySelections:
+    'match(input).with(P.array({ a: P.select("x"), b: P.optional(P.select("y")) }), ({ x, y }) => [x, y]).with({ a: P.array(P.select()) }, { b: P.array(P.select()) }, (v) => v).with([P.number, ...P.array(P.array(P.select()))], (s) => s).with({ c: P.record(P.string, P.array(P.select())) }, (c) => c).otherwise(() => 0)',
   records:
     "match(input).with(P.record(P.string, P.number), (r) => Object.keys(r)).with(P.record(P.string, { a: P.select() }), (as) => as).otherwise(() => 0)",
   setsAndMaps:
