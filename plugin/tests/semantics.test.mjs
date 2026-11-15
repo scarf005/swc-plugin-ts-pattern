@@ -1226,3 +1226,69 @@ test("selection names that are not identifiers become quoted keys", async () => 
   )
   assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
 })
+
+test("array destructuring handlers iterate their input", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const first = (input) => match(input).with(P.string, () => "string").otherwise(([item]) => item);
+    export const run = () => {
+      let error;
+      try { first({ 0: "object" }); } catch (caught) { error = caught.constructor.name; }
+      return [first(new Set(["set"])), first(new Map([[1, 2]])), first(["array"]), error];
+    };
+  `,
+    ["set", [1, 2], "array", "TypeError"],
+  )
+})
+
+test("records that select nothing pass the input to the handler", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const values = (input) => match(input).with(P.record(P.string, P.select()), (s) => s).otherwise(() => "other");
+    const entries = (input) =>
+      match(input).with(P.record(P.select("k"), P.number.select("v")), (s) => s).otherwise(() => "other");
+    const nested = (input) => match(input).with({ r: P.record(P.string, P.select()) }, (s) => s).otherwise(() => "other");
+    export const run = () => [values({}), values({ a: 1 }), entries({}), entries({ a: 1 }), nested({ r: {} })];
+  `,
+    [{}, [1], {}, { k: ["a"], v: [1] }, { r: {} }],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("arms with several patterns pass only the selections of the pattern that matched", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const named = (input) =>
+      match(input).with({ a: P.select("x"), b: 1 }, { c: P.select("y") }, (s) => s).otherwise(() => "other");
+    const anonymous = (input) =>
+      match(input).with({ a: P.select() }, { b: P.select() }, (s) => s).otherwise(() => "other");
+    const partly = (input) =>
+      match(input).with({ a: P.select() }, { b: 1 }, (s) => s).otherwise(() => "other");
+    export const run = () => [
+      named({ a: 1, b: 1 }), named({ c: 3 }), named({ a: 1, b: 2, c: 3 }),
+      anonymous({ a: 1 }), anonymous({ b: 2 }),
+      partly({ a: 1 }), partly({ b: 1 }),
+    ];
+  `,
+    [{ x: 1 }, { y: 3 }, { x: 1, y: 3 }, 1, 2, 1, { b: 1 }],
+  )
+})
+
+test("optional selections read their property once", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => {
+      const reads = [];
+      const input = { get a() { reads.push("a"); return 3; } };
+      const pick = (input) => match(input).with({ a: P.optional(P.select()) }, (s) => s).otherwise(() => "other");
+      return [pick(input), reads];
+    };
+  `,
+    [3, ["a"]],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
