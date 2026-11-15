@@ -1,0 +1,34 @@
+{
+  "name": "swc-plugin-ts-pattern-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare-assets": "node scripts/prepare-static-assets.ts",
+    "dev": "npm run prepare-assets && vp dev",
+    "build": "npm run prepare-assets && vp build && node scripts/prepare-pages.ts",
+    "preview": "vp preview",
+    "check": "tsc --noEmit",
+    "test": "vp test --project unit",
+    "bench": "vp test bench --project 'unit (bench)'",
+    "test:browser": "npm run prepare-assets && vp test --project browser"
+  },
+  "dependencies": {
+    "@preact/signals": "^2.5.1",
+    "monaco-editor": "^0.57.0",
+    "preact": "^10.28.0",
+    "ts-pattern": "^5.8.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.2",
+    "@types/node": "^24.12.3",
+    "fast-check": "^4.3.0",
+    "playwright": "1.60.0",
+    "typescript": "~6.0.2",
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "vite-plus": "1.6.0"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "vitest": "5.1.0"
+  }
+}

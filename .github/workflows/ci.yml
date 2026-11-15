@@ -24,10 +24,14 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: |
+            package-lock.json
             plugin/package-lock.json
+            web/package-lock.json
+            examples/package-lock.json
             demo/package-lock.json
             vendor/ts-pattern/package-lock.json
 
+      # Runs the plugin Deno runtime tests; they skip without deno.
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.9.7
@@ -46,6 +50,12 @@ jobs:
           restore-keys: |
             cargo-${{ runner.os }}-
 
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run fmt -- --check
+
       - run: cargo fmt --manifest-path plugin/Cargo.toml -- --check
 
       - run: cargo clippy --locked --manifest-path plugin/Cargo.toml --all-targets -- -D warnings
@@ -59,19 +69,22 @@ jobs:
       - run: npm pack --dry-run --ignore-scripts
         working-directory: plugin
 
-      - run: deno task check
+      - run: npm ci
         working-directory: web
 
-      - run: deno task test
+      - run: npm run check
         working-directory: web
 
-      - run: deno task build
+      - run: npm test
         working-directory: web
 
-      - run: deno run -A playwright install --with-deps chromium
+      - run: npm run build
         working-directory: web
 
-      - run: deno task test:browser
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - run: npm run test:browser
         working-directory: web
 
       - run: npm ci
@@ -89,13 +102,16 @@ jobs:
       - run: npm run test:browser
         working-directory: demo
 
-      - run: deno task check
+      - run: npm ci
+        working-directory: examples
+
+      - run: npm run check
         working-directory: examples
 
       - run: npm ci
         working-directory: vendor/ts-pattern
 
-      - run: deno run -A --unstable-detect-cjs scripts/check-vendored-ts-pattern-swc.ts
+      - run: node scripts/check-vendored-ts-pattern-swc.mts
 
       - run: npm test
         working-directory: vendor/ts-pattern

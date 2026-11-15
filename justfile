@@ -1,25 +1,29 @@
 web:
-    cd web && deno task dev
+    cd web && npm ci && npm run dev
 
+# Lints, formats and tests everything except the browser tests.
 test:
-    cd plugin && npm ci
-    cargo test --manifest-path plugin/Cargo.toml
-    cd plugin && npm run build
-    cd plugin && npm run test:runtime
-    cd web && deno task check
-    cd web && deno task test
+    npm ci
+    npm run lint
+    npm run fmt -- --check
+    cd plugin && npm ci && npm test
+    cd web && npm ci && npm run check && npm test
     just check-examples
     just test-vendored-ts-pattern
 
+# Runs the Playwright playground tests in headless Chromium.
+test-browser:
+    cd web && npm ci && env -u WAYLAND_DISPLAY -u DISPLAY npm run test:browser
+
 bench:
-    cd web && deno task bench
+    cd web && npm ci && npm run --silent bench
 
 check-examples:
-    cd examples && deno task check
+    cd examples && npm ci && npm run check
 
 test-vendored-ts-pattern:
     cd vendor/ts-pattern && npm ci
-    deno run -A --unstable-detect-cjs scripts/check-vendored-ts-pattern-swc.ts
+    node scripts/check-vendored-ts-pattern-swc.mts
     cd vendor/ts-pattern && npm test
 
 bench-ts-pattern: bench
@@ -28,10 +32,10 @@ bench-file:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p docs
-    NO_COLOR=1 just bench | sed "s|file://{{justfile_directory()}}/||" > docs/just-bench.txt
+    NO_COLOR=1 just bench | sed "s|{{justfile_directory()}}/||" > docs/just-bench.txt
 
 update-readme-bench: bench-file
-    deno run -A npm:automd --input plugin/README.md
+    npx --yes automd --input plugin/README.md
 
 # Fills the README with the Benchmark workflow result for HEAD.
 update-readme-bench-ci:
@@ -41,7 +45,7 @@ update-readme-bench-ci:
     dir=$(mktemp -d)
     gh run download "$run" --name benchmark --dir "$dir"
     mv "$dir/just-bench.txt" docs/just-bench.txt
-    deno run -A npm:automd --input plugin/README.md
+    npx --yes automd --input plugin/README.md
 
 # Tests, builds and publishes the plugin to npm; a prerelease gets its label as dist-tag.
 release:

@@ -76,10 +76,12 @@ deno run -A --preload npm:@scarf005/swc-plugin-ts-pattern/register ./foo.ts
 
 Deno requires explicit extensions for relative imports. Import generated `.cts` modules through their default export, then destructure the exported members; Deno cannot discover the SWC-generated named CommonJS exports during static analysis.
 
-For repository-local development, build with `cd plugin && npm ci && npm run build`, then run from the repository root using the examples import map:
+For repository-local development, build with `cd plugin && npm ci && npm run build`, then run an example with the `ts-pattern` that `examples/package.json` installs:
 
 ```sh
-deno run -A --config examples/deno.jsonc --preload ./plugin/register.mjs ./examples/literals.ts
+cd examples && npm ci
+node --import ../plugin/register.mjs literals.ts
+deno run -A --preload ../plugin/register.mjs literals.ts
 ```
 
 ### Programmatic transform
@@ -97,7 +99,7 @@ Set `SWC_PLUGIN_TS_PATTERN_PATH` to use a custom-built WASM with the loader. For
 
 ## Benchmark
 
-The `bench` task compares [`bdbaraban/ts-pattern-benchmark`](https://github.com/bdbaraban/ts-pattern-benchmark) cases across raw `ts-pattern`, native code, and plugin output, then runs the local examples. The results below come from the [`Benchmark` workflow](https://github.com/scarf005/swc-plugin-ts-pattern/actions/workflows/bench.yml) on a GitHub-hosted runner; `just update-readme-bench-ci` copies the run for the current commit into this section.
+`just bench` compares [`bdbaraban/ts-pattern-benchmark`](https://github.com/bdbaraban/ts-pattern-benchmark) cases across raw `ts-pattern`, native code, and plugin output, then runs the local examples. The results below come from the [`Benchmark` workflow](https://github.com/scarf005/swc-plugin-ts-pattern/actions/workflows/bench.yml) on a GitHub-hosted runner; `just update-readme-bench-ci` copies the run for the current commit into this section.
 
 <!-- automd:file src="../docs/just-bench.txt" code lang="text" -->
 

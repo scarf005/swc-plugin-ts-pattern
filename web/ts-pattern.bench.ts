@@ -1,5 +1,5 @@
-/// <reference lib="deno.ns" />
-
+import { readdir, readFile, stat } from "node:fs/promises"
+import { test } from "vite-plus/test"
 import { prepareBenchmarkInputs } from "./src/benchmark.ts"
 import { garbageInputPairsForInputs, seedFromString } from "./src/property.ts"
 import { getModule, type ModuleExports } from "./src/runtime.ts"
@@ -8,7 +8,6 @@ import { pluginPath, transformWithSwcWasm } from "./src/swc-wasm-transform.ts"
 type BenchTarget = {
   label: string
   module: Required<ModuleExports>
-  baseline?: boolean
 }
 
 type BenchCase = {
@@ -131,8 +130,8 @@ const benchmarkSources = [
 
 const getExampleNames = async () => {
   const names: string[] = []
-  for await (const entry of Deno.readDir(examplesRoot)) {
-    if (entry.isFile && entry.name.endsWith(".ts")) names.push(entry.name)
+  for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".ts")) names.push(entry.name)
   }
   names.sort()
   if (names.length === 0) throw new Error("No examples found")
@@ -149,7 +148,7 @@ const transformExample = async (source: string, options: { plugin: boolean }) =>
   )
 
 const loadExample = async (name: string): Promise<BenchCase> => {
-  const source = await Deno.readTextFile(new URL(name, examplesRoot))
+  const source = await readFile(new URL(name, examplesRoot), "utf8")
   const [baseline, optimized] = await Promise.all([
     transformExample(source, { plugin: false }),
     transformExample(source, { plugin: true }),
@@ -181,7 +180,6 @@ const loadExample = async (name: string): Promise<BenchCase> => {
       {
         label: "ts-pattern swc plugin",
         module: { run: optimized.run, inputs: inputs.optimizedInputs },
-        baseline: true,
       },
     ],
   }
@@ -209,7 +207,7 @@ const assertSameOutputs = (id: string, targets: BenchTarget[]) => {
 const loadTsPatternBenchmarkCase = async (
   source: (typeof benchmarkSources)[number],
 ): Promise<BenchCase> => {
-  await Deno.stat(new URL(source.sourceFile, tsPatternBenchmarkRoot))
+  await stat(new URL(source.sourceFile, tsPatternBenchmarkRoot))
   const [raw, native, optimized] = await Promise.all([
     transformExample(source.matcher, { plugin: false }),
     transformExample(source.native, { plugin: false }),
@@ -229,7 +227,6 @@ const loadTsPatternBenchmarkCase = async (
     {
       label: "native code",
       module: native as Required<ModuleExports>,
-      baseline: true,
     },
     {
       label: "ts-pattern swc plugin",
@@ -249,31 +246,16 @@ const createRunner = (module: Required<ModuleExports>) => {
   }
 }
 
-const registerBenchCase = (benchCase: BenchCase) => {
-  for (const target of benchCase.targets) {
-    const run = createRunner(target.module)
-    Deno.bench({
-      name: target.label,
-      group: benchCase.id,
-      baseline: target.baseline,
-    }, () => {
-      sink = run()
-    })
-  }
-}
-
-await Deno.stat(pluginPath)
+await stat(pluginPath)
 const [examples, tsPatternBenchmarkCases] = await Promise.all([
   Promise.all((await getExampleNames()).map(loadExample)),
   Promise.all(benchmarkSources.map(loadTsPatternBenchmarkCase)),
 ])
 
-let sink: unknown
-
-for (const benchCase of [...tsPatternBenchmarkCases, ...examples]) {
-  registerBenchCase(benchCase)
+for (const { id, targets } of [...tsPatternBenchmarkCases, ...examples]) {
+  test(id, async ({ bench }) => {
+    await bench.compare(
+      ...targets.map(({ label, module }) => bench(label, createRunner(module))),
+    )
+  })
 }
-
-addEventListener("unload", () => {
-  if (Object.is(sink, globalThis)) console.error(sink)
-})

@@ -1,5 +1,6 @@
-/// <reference lib="deno.ns" />
-
+import { spawnSync } from "node:child_process";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { transformWithSwcWasm } from "../web/src/swc-wasm-transform.ts";
 
 const vendorRoot = new URL("../vendor/ts-pattern/", import.meta.url);
@@ -32,7 +33,10 @@ const tsPatternRequireAliases = (source: string) =>
 // The plugin keeps `throw match(input).exhaustive()` as the no-match fallback,
 // so ts-pattern throws its own NonExhaustiveError.
 const withoutExhaustiveFallbacks = (source: string) =>
-  source.replace(/throw \(0, [A-Za-z_$][\w$]*\.match\)\([A-Za-z_$][\w$]*\)\.exhaustive\(\);/g, "");
+  source.replace(
+    /throw \(0, [A-Za-z_$][\w$]*\.match\)\([A-Za-z_$][\w$]*\)\.exhaustive\(\);/g,
+    "",
+  );
 
 const residualTsPatternMatchCall = (code: string) => {
   const source = withoutExhaustiveFallbacks(code);
@@ -50,33 +54,16 @@ const residualTsPatternMatchCall = (code: string) => {
 };
 
 const testFiles = async () => {
-  const files: string[] = [];
-  for await (const entry of Deno.readDir(testsRoot)) {
-    if (entry.isFile && entry.name.endsWith(".test.ts")) files.push(entry.name);
-  }
-  files.sort();
+  const files = (await readdir(testsRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.ts"))
+    .map((entry) => entry.name)
+    .sort();
   if (files.length === 0) throw new Error("No vendored ts-pattern tests found");
   return files;
 };
 
-const copyDirectory = async (from: URL, to: URL) => {
-  await Deno.mkdir(to, { recursive: true });
-  for await (const entry of Deno.readDir(from)) {
-    const source = new URL(entry.name, from);
-    const target = new URL(entry.name, to);
-    if (entry.isDirectory) {
-      await copyDirectory(
-        new URL(`${entry.name}/`, from),
-        new URL(`${entry.name}/`, to),
-      );
-    } else if (entry.isFile) {
-      await Deno.copyFile(source, target);
-    }
-  }
-};
-
 const writeGeneratedConfig = async () =>
-  await Deno.writeTextFile(
+  await writeFile(
     generatedConfig,
     `module.exports = {
   preset: 'ts-jest',
@@ -88,32 +75,21 @@ const writeGeneratedConfig = async () =>
 `,
   );
 
-const runGeneratedTests = async () => {
-  const command = new Deno.Command("npm", {
-    args: [
-      "exec",
-      "--",
-      "jest",
-      "--config",
-      Deno.realPathSync(generatedConfig),
-    ],
-    cwd: Deno.realPathSync(vendorRoot),
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const status = await command.output();
-  if (!status.success) {
-    throw new Error(`Generated Jest tests failed: ${status.code}`);
-  }
+const runGeneratedTests = () => {
+  const { status } = spawnSync(
+    "npm",
+    ["exec", "--", "jest", "--config", fileURLToPath(generatedConfig)],
+    { cwd: vendorRoot, stdio: "inherit" },
+  );
+  if (status !== 0) throw new Error(`Generated Jest tests failed: ${status}`);
 };
 
-await Deno.remove(generatedRoot, { recursive: true }).catch((error) => {
-  if (!(error instanceof Deno.errors.NotFound)) throw error;
-});
-await Deno.mkdir(generatedRoot, { recursive: true });
-await copyDirectory(
+await rm(generatedRoot, { recursive: true, force: true });
+await mkdir(generatedRoot, { recursive: true });
+await cp(
   new URL("types-catalog/", testsRoot),
   new URL("types-catalog/", generatedRoot),
+  { recursive: true },
 );
 
 try {
@@ -132,7 +108,7 @@ try {
 
   for (const file of files) {
     const url = new URL(file, testsRoot);
-    const source = rewriteImports(await Deno.readTextFile(url));
+    const source = rewriteImports(await readFile(url, "utf8"));
     try {
       const output = await transformWithSwcWasm({
         code: source,
@@ -147,7 +123,7 @@ try {
           `${file}: transformed output still calls ts-pattern match: ${residualMatch}`,
         );
       }
-      await Deno.writeTextFile(
+      await writeFile(
         new URL(file.replace(/\.test\.ts$/, ".test.cjs"), generatedRoot),
         output.code,
       );
@@ -169,9 +145,7 @@ try {
   console.log(
     `Verified ${filesRequiringNoMatch.length} vendored ts-pattern test files contain no runtime match calls`,
   );
-  await runGeneratedTests();
+  runGeneratedTests();
 } finally {
-  await Deno.remove(generatedRoot, { recursive: true }).catch((error) => {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-  });
+  await rm(generatedRoot, { recursive: true, force: true });
 }

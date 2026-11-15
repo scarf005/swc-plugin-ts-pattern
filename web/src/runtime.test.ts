@@ -1,6 +1,5 @@
-/// <reference lib="deno.ns" />
-
-import { assert, assertEquals } from "jsr:@std/assert"
+import { readdir, readFile, stat } from "node:fs/promises"
+import { assert, test } from "vite-plus/test"
 import { formatValue, getModule } from "./runtime.ts"
 import { pluginPath, transformWithSwcWasm } from "./swc-wasm-transform.ts"
 
@@ -18,11 +17,11 @@ const transformExample = async (
     })).code,
   )
 
-Deno.test("formatValue formats playground runtime values", () => {
-  assertEquals(formatValue(20n), "20n")
-  assertEquals(formatValue(Symbol.for("ok")), "Symbol(ok)")
-  assertEquals(formatValue(new Set([1, "a"])), 'Set(2) { 1, "a" }')
-  assertEquals(
+test("formatValue formats playground runtime values", () => {
+  assert.deepEqual(formatValue(20n), "20n")
+  assert.deepEqual(formatValue(Symbol.for("ok")), "Symbol(ok)")
+  assert.deepEqual(formatValue(new Set([1, "a"])), 'Set(2) { 1, "a" }')
+  assert.deepEqual(
     formatValue(new Map([["a", 1]])),
     'Map(1) { "a" => 1 }',
   )
@@ -30,19 +29,19 @@ Deno.test("formatValue formats playground runtime values", () => {
 
 const getExampleNames = async () => {
   const names: string[] = []
-  for await (const entry of Deno.readDir(examplesRoot)) {
-    if (entry.isFile && entry.name.endsWith(".ts")) names.push(entry.name)
+  for (const entry of await readdir(examplesRoot, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".ts")) names.push(entry.name)
   }
   names.sort()
   assert(names.length > 0)
   return names
 }
 
-Deno.test("all examples run in the playground runtime", async () => {
-  await Deno.stat(pluginPath)
+test("all examples run in the playground runtime", async () => {
+  await stat(pluginPath)
 
   for (const name of await getExampleNames()) {
-    const source = await Deno.readTextFile(new URL(name, examplesRoot))
+    const source = await readFile(new URL(name, examplesRoot), "utf8")
     const [baseline, optimized] = await Promise.all([
       transformExample(source, { plugin: false }),
       transformExample(source, { plugin: true }),
@@ -50,7 +49,7 @@ Deno.test("all examples run in the playground runtime", async () => {
 
     assert(baseline.inputs?.length, `${name}: missing baseline inputs`)
     assert(optimized.inputs?.length, `${name}: missing optimized inputs`)
-    assertEquals(
+    assert.deepEqual(
       baseline.inputs.length,
       optimized.inputs.length,
       `${name}: input length differs`,
@@ -58,12 +57,12 @@ Deno.test("all examples run in the playground runtime", async () => {
 
     for (const [index, baselineInput] of baseline.inputs.entries()) {
       const optimizedInput = optimized.inputs[index]
-      assertEquals(
+      assert.deepEqual(
         formatValue(baselineInput),
         formatValue(optimizedInput),
         `${name}: input ${index} differs`,
       )
-      assertEquals(
+      assert.deepEqual(
         formatValue(baseline.run(baselineInput)),
         formatValue(optimized.run(optimizedInput)),
         `${name}: output ${index} differs`,
@@ -72,11 +71,11 @@ Deno.test("all examples run in the playground runtime", async () => {
   }
 })
 
-Deno.test("all match-based examples are compiled away", async () => {
-  await Deno.stat(pluginPath)
+test("all match-based examples are compiled away", async () => {
+  await stat(pluginPath)
 
   for (const name of await getExampleNames()) {
-    const source = await Deno.readTextFile(new URL(name, examplesRoot))
+    const source = await readFile(new URL(name, examplesRoot), "utf8")
     if (!source.includes("match(")) continue
 
     const output = (await transformWithSwcWasm({

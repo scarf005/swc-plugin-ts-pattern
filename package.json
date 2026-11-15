@@ -1,0 +1,16 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fmt": "vp fmt examples plugin scripts web vite.config.ts",
+    "lint": "vp lint examples plugin scripts web"
+  },
+  "devDependencies": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "vite-plus": "1.6.0"
+  },
+  "overrides": {
+    "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",
+    "vitest": "5.1.0"
+  }
+}

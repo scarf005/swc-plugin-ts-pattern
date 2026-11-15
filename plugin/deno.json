@@ -1,8 +1,4 @@
 {
-  "fmt": {
-    "semiColons": false,
-    "proseWrap": "never"
-  },
   "nodeModulesDir": "auto",
   "imports": {
     "@swc/core": "npm:@swc/core@~1.15.0"

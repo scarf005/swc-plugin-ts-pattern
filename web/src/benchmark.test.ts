@@ -1,6 +1,4 @@
-/// <reference lib="deno.ns" />
-
-import { assertEquals } from "jsr:@std/assert"
+import { assert, test } from "vite-plus/test"
 import {
   benchmarkInputsEqual,
   benchmarkModules,
@@ -21,7 +19,7 @@ import { formatValue } from "./runtime.ts"
 for (
   const [baselineMs, optimizedMs] of [[0, 1], [1, 0], [0, 0], [1, Infinity]]
 ) {
-  Deno.test(`unmeasurable samples do not claim speedups (${baselineMs}, ${optimizedMs})`, () => {
+  test(`unmeasurable samples do not claim speedups (${baselineMs}, ${optimizedMs})`, () => {
     const baselineRun = () => 1
     const optimizedRun = () => 1
     const result = benchmarkModules({
@@ -33,7 +31,7 @@ for (
       }),
     })
     if (result.identicalCode) throw new Error("Expected distinct code")
-    assertEquals(result.speedup, null)
+    assert.deepEqual(result.speedup, null)
     const text = formatBenchmarkComparison(result, {
       count: 1000,
       inputCount: 1,
@@ -42,13 +40,13 @@ for (
       rejectedInputCount: 0,
       runtimeLabel: "browser benchmark",
     })
-    assertEquals(/Infinity|NaN|0\.000 µs\/iteration/.test(text), false)
-    assertEquals(text.includes("increase iterations/sample"), true)
+    assert.deepEqual(/Infinity|NaN|0\.000 µs\/iteration/.test(text), false)
+    assert.deepEqual(text.includes("increase iterations/sample"), true)
   })
 }
 
-Deno.test("benchmarkOrder alternates execution order", () => {
-  assertEquals(benchmarkOrder(5), [
+test("benchmarkOrder alternates execution order", () => {
+  assert.deepEqual(benchmarkOrder(5), [
     ["baseline", "optimized"],
     ["optimized", "baseline"],
     ["baseline", "optimized"],
@@ -57,14 +55,14 @@ Deno.test("benchmarkOrder alternates execution order", () => {
   ])
 })
 
-Deno.test("garbageValues generates deterministic edge-case inputs", () => {
+test("garbageValues generates deterministic edge-case inputs", () => {
   const seed = seedFromString("intro-html")
 
-  assertEquals(
+  assert.deepEqual(
     garbageValues({ seed, count: 4 }).map(formatValue),
     garbageValues({ seed, count: 4 }).map(formatValue),
   )
-  assertEquals(garbageValues({ seed, count: 4 }).slice(0, 4), [
+  assert.deepEqual(garbageValues({ seed, count: 4 }).slice(0, 4), [
     null,
     undefined,
     true,
@@ -72,8 +70,8 @@ Deno.test("garbageValues generates deterministic edge-case inputs", () => {
   ])
 })
 
-Deno.test("garbageInputPairsForInputs uses fast-check to preserve paired input shape", () => {
-  assertEquals(
+test("garbageInputPairsForInputs uses fast-check to preserve paired input shape", () => {
+  assert.deepEqual(
     garbageInputPairsForInputs([["a", "b"]], [["a", "b"]], {
       seed: 1,
       count: 4,
@@ -87,15 +85,15 @@ Deno.test("garbageInputPairsForInputs uses fast-check to preserve paired input s
   )
 })
 
-Deno.test("benchmarkInputsEqual compares formatted values", () => {
-  assertEquals(
+test("benchmarkInputsEqual compares formatted values", () => {
+  assert.deepEqual(
     benchmarkInputsEqual([1n, new Set([1, 2])], [1n, new Set([1, 2])]),
     true,
   )
-  assertEquals(benchmarkInputsEqual([1], [2]), false)
+  assert.deepEqual(benchmarkInputsEqual([1], [2]), false)
 })
 
-Deno.test("measure times run(input) without formatting results", () => {
+test("measure times run(input) without formatting results", () => {
   const result = {
     toString: () => {
       throw new Error("should not format")
@@ -103,11 +101,11 @@ Deno.test("measure times run(input) without formatting results", () => {
   }
   const bench = measure(() => result, [1], 3)
 
-  assertEquals(typeof bench.ms, "number")
-  assertEquals(getBenchmarkSink(), result)
+  assert.deepEqual(typeof bench.ms, "number")
+  assert.deepEqual(getBenchmarkSink(), result)
 })
 
-Deno.test("prepareBenchmarkInputs validates generated garbage before benchmarking", () => {
+test("prepareBenchmarkInputs validates generated garbage before benchmarking", () => {
   const baseline = {
     run: (input: unknown) => {
       if (input === "throw") throw new Error("same")
@@ -123,7 +121,7 @@ Deno.test("prepareBenchmarkInputs validates generated garbage before benchmarkin
     inputs: ["ok"],
   }
 
-  assertEquals(
+  assert.deepEqual(
     prepareBenchmarkInputs({
       baseline,
       optimized,
@@ -143,13 +141,13 @@ Deno.test("prepareBenchmarkInputs validates generated garbage before benchmarkin
   )
 })
 
-Deno.test("prepareBenchmarkInputs keeps compiled module inputs paired", () => {
+test("prepareBenchmarkInputs keeps compiled module inputs paired", () => {
   class BaselineClass {}
   class OptimizedClass {}
   const baselineInput = new BaselineClass()
   const optimizedInput = new OptimizedClass()
 
-  assertEquals(
+  assert.deepEqual(
     prepareBenchmarkInputs({
       baseline: {
         run: (input) => input instanceof BaselineClass ? "matched" : "missed",
@@ -172,7 +170,7 @@ Deno.test("prepareBenchmarkInputs keeps compiled module inputs paired", () => {
   )
 })
 
-Deno.test("benchmarkModules reports identical generated code", () => {
+test("benchmarkModules reports identical generated code", () => {
   const run = (input: unknown) => input
   const result = benchmarkModules({
     baseline: { code: "same", run, inputs: [1] },
@@ -180,14 +178,14 @@ Deno.test("benchmarkModules reports identical generated code", () => {
     count: 10,
   })
 
-  assertEquals(result, {
+  assert.deepEqual(result, {
     identicalCode: true,
     note: "Generated code is identical. No SWC optimization was applied.",
   })
 })
 
-Deno.test("formatBenchmarkComparison labels samples and iterations", () => {
-  assertEquals(
+test("formatBenchmarkComparison labels samples and iterations", () => {
+  assert.deepEqual(
     formatBenchmarkComparison({
       identicalCode: false,
       baseline: { ms: 94 },
@@ -212,7 +210,7 @@ Deno.test("formatBenchmarkComparison labels samples and iterations", () => {
   )
 })
 
-Deno.test("benchmarkModules uses alternating samples and median", () => {
+test("benchmarkModules uses alternating samples and median", () => {
   const baselineRun = (input: unknown) => input
   const optimizedRun = (input: unknown) => input
   const calls: string[] = []
@@ -235,7 +233,7 @@ Deno.test("benchmarkModules uses alternating samples and median", () => {
     measureFn,
   })
 
-  assertEquals(calls, [
+  assert.deepEqual(calls, [
     "baseline",
     "optimized",
     "optimized",
@@ -247,7 +245,7 @@ Deno.test("benchmarkModules uses alternating samples and median", () => {
     "baseline",
     "optimized",
   ])
-  assertEquals(result, {
+  assert.deepEqual(result, {
     identicalCode: false,
     baseline: { ms: 20 },
     optimized: { ms: 15 },

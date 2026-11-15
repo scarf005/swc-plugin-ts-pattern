@@ -1,4 +1,4 @@
-import { match, P } from "ts-pattern"
+import { match } from "ts-pattern"
 
 type Text = { type: "text"; data: string }
 type Img = { type: "img"; data: { src: string; alt: string } }
