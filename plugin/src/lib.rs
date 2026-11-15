@@ -3097,29 +3097,9 @@ fn collect_pat_bindings(param: &Pat, value: Expr, bindings: &mut Vec<(Id, Expr)>
             ),
             ObjectPatProp::Assign(_) | ObjectPatProp::Rest(_) => None,
         }),
-        Pat::Array(array) => array
-            .elems
-            .iter()
-            .enumerate()
-            .try_for_each(|(index, elem)| {
-                if let Some(elem) = elem {
-                    collect_pat_bindings(
-                        elem,
-                        computed_member_expr(
-                            value.clone(),
-                            Expr::Lit(Lit::Num(Number {
-                                span: DUMMY_SP,
-                                value: index as f64,
-                                raw: None,
-                            })),
-                        ),
-                        bindings,
-                    )
-                } else {
-                    Some(())
-                }
-            }),
-        Pat::Assign(_) | Pat::Rest(_) | Pat::Invalid(_) | Pat::Expr(_) => None,
+        // Array destructuring iterates its value, which indexing does not.
+        Pat::Array(_)
+        | Pat::Assign(_) | Pat::Rest(_) | Pat::Invalid(_) | Pat::Expr(_) => None,
     }
 }
 
