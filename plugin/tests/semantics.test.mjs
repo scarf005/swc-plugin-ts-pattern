@@ -1157,3 +1157,38 @@ test("const object patterns that escape are not inlined", async () => {
   )
   assert.match(code, /=== "a"/, "patterns used only as patterns still compile")
 })
+
+test("local undefined bindings match their own value", async () => {
+  await assertEquivalent(
+    `
+    import { match } from "ts-pattern";
+    export const run = () => {
+      const undefined = 1;
+      return [
+        match(1).with(undefined, () => "local").otherwise(() => "other"),
+        match({ a: 1 }).with({ a: undefined }, () => "local").otherwise(() => "other"),
+      ];
+    };
+  `,
+    ["local", "local"],
+  )
+})
+
+test("object patterns keep the keys their literal creates", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const key = "a";
+    export const run = () => [
+      match({ a: 1 }).with({ __proto__: P.string }, () => "string").otherwise(() => "other"),
+      match({ a: 1 }).with({ "__proto__": 1 }, () => "no key").otherwise(() => "other"),
+      match({ a: 2 }).with({ a: 1, a: 2 }, () => "last").otherwise(() => "other"),
+      match({ 1: "y" }).with({ 1: "x", "1": "y" }, () => "last").otherwise(() => "other"),
+      match({ a: 2 }).with({ [key]: 1, a: 2 }, () => "last").otherwise(() => "other"),
+      match({ a: { b: 2 } }).with({ a: { b: 1, b: 2 } }, () => "last").otherwise(() => "other"),
+    ];
+  `,
+    // The first pattern inherits P.string matching through its prototype.
+    ["other", "no key", "last", "last", "last", "last"],
+  )
+})
