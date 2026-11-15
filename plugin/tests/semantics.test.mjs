@@ -1368,6 +1368,6 @@ test("later patterns are built after earlier handlers run", async () => {
       return [f(1), f(2), error, log];
     };
   `,
-    [1, 2, "boom", ["make 1", "h1", "make 1", "make 2", "h2"]],
+    [1, 2, "boom", ["make 1", "h1", "make 2", "make 1", "make 2", "h2"]],
   )
 })

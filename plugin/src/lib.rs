@@ -578,7 +578,7 @@ impl TsPatternTransformer {
     }
 
     fn compile_arrow_match_stmts(&mut self, chain: MatchChain) -> Option<Vec<Stmt>> {
-        let (mut stmts, chain) = self.snapshot_chain(chain);
+        let (mut stmts, chain) = self.snapshot_chain(chain)?;
         if chain.arms.iter().all(is_switchable_arm) {
             stmts.extend(self.compile_switch_stmts(chain));
         } else {
@@ -602,13 +602,24 @@ impl TsPatternTransformer {
 
     /// Evaluates the input and the values the chain's patterns and callbacks
     /// evaluate once, in source order, into the returned bindings, and
-    /// rewrites the chain to read them.
-    fn prepare_chain(&self, chain: MatchChain) -> (Vec<(Ident, Expr)>, MatchChain) {
+    /// rewrites the chain to read them. ts-pattern evaluates the arguments of
+    /// an arm after the arms before it run, so an argument with effects after
+    /// an arm that runs code stays on the runtime.
+    fn prepare_chain(&self, chain: MatchChain) -> Option<(Vec<(Ident, Expr)>, MatchChain)> {
         let input = private_ident!("_tsPatternInput");
         let mut params = vec![input.clone()];
         let mut args = vec![*chain.input];
         let mut arms = Vec::with_capacity(chain.arms.len());
+        let mut quiet = true;
+        let reorders = |quiet: bool, args: &[Expr]| !quiet && args.iter().any(is_effectful_expr);
         for arm in chain.arms {
+            let start = args.len();
+            let arm_quiet = arm.guard.is_none()
+                && is_quiet_handler(&arm.handler)
+                && !arm
+                    .patterns
+                    .iter()
+                    .any(|pattern| self.runs_user_code(pattern));
             let mut patterns = Vec::with_capacity(arm.patterns.len());
             for pattern in arm.patterns {
                 let mut pattern = self.resolve_pattern_expr(&pattern).clone();
@@ -620,12 +631,17 @@ impl TsPatternTransformer {
                 .map(|guard| prepare_callback(guard, "_tsPatternGuard", &mut params, &mut args));
             let handler =
                 prepare_callback(arm.handler, "_tsPatternHandler", &mut params, &mut args);
+            if reorders(quiet, &args[start..]) {
+                return None;
+            }
+            quiet &= arm_quiet;
             arms.push(MatchArm {
                 patterns,
                 guard,
                 handler,
             });
         }
+        let start = args.len();
         let fallback = match chain.fallback {
             Fallback::Otherwise(handler) => Fallback::Otherwise(prepare_callback(
                 handler,
@@ -635,18 +651,21 @@ impl TsPatternTransformer {
             )),
             fallback => fallback,
         };
+        if reorders(quiet, &args[start..]) {
+            return None;
+        }
         let chain = MatchChain {
             input: Box::new(ident_expr(&input)),
             arms,
             fallback,
         };
-        (params.into_iter().zip(args).collect(), chain)
+        Some((params.into_iter().zip(args).collect(), chain))
     }
 
     /// Declares the input, and anything preparation evaluates, as constants.
-    fn snapshot_chain(&self, chain: MatchChain) -> (Vec<Stmt>, MatchChain) {
+    fn snapshot_chain(&self, chain: MatchChain) -> Option<(Vec<Stmt>, MatchChain)> {
         let (bindings, chain) = if needs_prepared_expression(self, &chain) {
-            self.prepare_chain(chain)
+            self.prepare_chain(chain)?
         } else {
             let input = private_ident!("_tsPatternInput");
             let bindings = vec![(input.clone(), *chain.input)];
@@ -657,14 +676,14 @@ impl TsPatternTransformer {
             .into_iter()
             .map(|(ident, value)| const_stmt(ident, value))
             .collect();
-        (stmts, chain)
+        Some((stmts, chain))
     }
 
     /// An expression cannot declare constants, so prepared bindings become
     /// temporaries of the enclosing function or, where none can be declared,
     /// the parameters of an immediately invoked arrow.
     fn compile_prepared_expression(&mut self, chain: MatchChain) -> Option<Expr> {
-        let (bindings, chain) = self.prepare_chain(chain);
+        let (bindings, chain) = self.prepare_chain(chain)?;
         if self.can_hoist() && matches!(chain.fallback, Fallback::Otherwise(_)) {
             // `(input = ..., value = ..., test ? ... : ...)` evaluates in the
             // same order as the arrow's arguments.
@@ -733,7 +752,7 @@ impl TsPatternTransformer {
             if can_inline_input(&chain.input) && !needs_prepared_expression(self, &chain) {
                 (Vec::new(), chain)
             } else {
-                self.snapshot_chain(chain)
+                self.snapshot_chain(chain)?
             };
         stmts.extend(self.compile_body(
             &Sink::Assign(target),
@@ -2046,6 +2065,23 @@ fn guard_requires_snapshot(guard: &Expr) -> bool {
         },
         Expr::Fn(_) => true,
         _ => true,
+    }
+}
+
+/// Whether a handler is an arrow whose expression body calls and mutates
+/// nothing.
+fn is_quiet_handler(handler: &Expr) -> bool {
+    match handler {
+        Expr::Arrow(arrow) => match &*arrow.body {
+            BlockStmtOrExpr::Expr(body) => {
+                let mut detector = EffectDetector { effect: false };
+                body.visit_with(&mut detector);
+                !detector.effect
+            }
+            BlockStmtOrExpr::BlockStmt(_) => false,
+        },
+        Expr::Paren(paren) => is_quiet_handler(&paren.expr),
+        _ => false,
     }
 }
 
