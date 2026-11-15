@@ -1028,6 +1028,21 @@ impl TsPatternTransformer {
             )?
         };
 
+        // A record that selects nothing makes no selections, so the handler
+        // gets the input; this works only when the record makes every
+        // selection of the arm.
+        let record_group = selections
+            .first()
+            .and_then(|selection| selection.capture_group.clone());
+        if selections
+            .iter()
+            .any(|selection| selection.capture_group.is_some())
+            && selections
+                .iter()
+                .any(|selection| selection.capture_group != record_group)
+        {
+            return None;
+        }
         let mut test = pattern_test;
         let mut captures = self.pending_temps.take();
         let mut grouped_captures: Vec<(Id, Ident)> = Vec::new();
@@ -1078,7 +1093,14 @@ impl TsPatternTransformer {
             test = and(test, predicate_result(guard, guard_input));
         }
 
-        let handler_input = selection_handler_input(match_input, handler_selections)?;
+        let mut handler_input = selection_handler_input(match_input.clone(), handler_selections)?;
+        if let Some((_, capture)) = grouped_captures.first() {
+            handler_input = cond_expr(
+                member_expr(ident_expr(capture), "selected"),
+                handler_input,
+                match_input,
+            );
+        }
         Some((test, handler_input, captures))
     }
 
@@ -3596,8 +3618,16 @@ fn record_selection_match(
         key_selections,
         value_selections,
     );
-    let result = record_result_object(ident_expr(&matched), selection.clone());
-    let invalid_result = record_result_object(bool_lit(false), selection);
+    let result = record_result_object(
+        ident_expr(&matched),
+        selection.clone(),
+        bin(
+            BinaryOp::NotEqEq,
+            member_expr(ident_expr(&keys), "length"),
+            num_lit(0.0),
+        ),
+    );
+    let invalid_result = record_result_object(bool_lit(false), selection, bool_lit(false));
     let push = |array: &Ident, item: &Ident| {
         expr_stmt(call_expr(
             member_expr(ident_expr(array), "push"),
@@ -3740,19 +3770,23 @@ fn record_selection_object(
     })
 }
 
-fn record_result_object(matched: Expr, selection: Expr) -> Expr {
+/// `selected` is false when the record has no keys, so nothing was selected.
+fn record_result_object(matched: Expr, selection: Expr, selected: Expr) -> Expr {
     Expr::Object(ObjectLit {
         span: DUMMY_SP,
-        props: vec![
+        props: [
+            ("matched", matched),
+            ("selection", selection),
+            ("selected", selected),
+        ]
+        .into_iter()
+        .map(|(key, value)| {
             PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                key: PropName::Ident(IdentName::new("matched".into(), DUMMY_SP)),
-                value: Box::new(matched),
-            }))),
-            PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
-                key: PropName::Ident(IdentName::new("selection".into(), DUMMY_SP)),
-                value: Box::new(selection),
-            }))),
-        ],
+                key: PropName::Ident(IdentName::new(key.into(), DUMMY_SP)),
+                value: Box::new(value),
+            })))
+        })
+        .collect(),
     })
 }
 

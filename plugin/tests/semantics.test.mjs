@@ -1255,6 +1255,15 @@ test("records that select nothing pass the input to the handler", async () => {
     [{}, [1], {}, { k: ["a"], v: [1] }, { r: {} }],
   )
   assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const mixed = (input) =>
+      match(input).with({ r: P.record(P.string, P.select("v")), s: P.select("s") }, (s) => s).otherwise(() => "other");
+    export const run = () => [mixed({ r: {}, s: 1 }), mixed({ r: { a: 2 }, s: 1 })];
+  `,
+    [{ s: 1 }, { v: [2], s: 1 }],
+  )
 })
 
 test("arms with several patterns pass only the selections of the pattern that matched", async () => {
