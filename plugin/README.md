@@ -52,7 +52,7 @@ const result = await transform(source, {
 
 ## Run TypeScript directly
 
-The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed.
+The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed. On Node.js, `.ts` and `.tsx` files load as CommonJS when the nearest `package.json` sets `"type": "commonjs"`. Imports of `./foo.js`, `./foo.jsx`, `./foo.mjs`, and `./foo.cjs` resolve to the matching TypeScript source.
 
 ### Node.js
 
