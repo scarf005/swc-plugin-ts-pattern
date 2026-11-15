@@ -10,7 +10,13 @@ main {
 .toolbar,
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 0.5rem;
+}
+
+.run-buttons {
+  display: flex;
   gap: 0.5rem;
 }
 
@@ -144,8 +150,6 @@ button {
     min-height: 100vh;
   }
 
-  .toolbar,
-  .controls,
   .panes,
   .pane-stack {
     display: grid;

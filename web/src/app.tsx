@@ -538,12 +538,14 @@ export const App = () => (
           <span>Iterations/sample</span>
           <input value={iterations.value} onInput={onIterationsInput} inputMode="numeric" />
         </label>
-        <button type="button" onClick={runCurrent}>
-          Run
-        </button>
-        <button type="button" onClick={runBenchmark}>
-          Benchmark
-        </button>
+        <div class="run-buttons">
+          <button type="button" onClick={runCurrent}>
+            Run
+          </button>
+          <button type="button" onClick={runBenchmark}>
+            Benchmark
+          </button>
+        </div>
       </div>
     </section>
     <section class="panes">

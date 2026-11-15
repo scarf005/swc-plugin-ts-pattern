@@ -178,6 +178,30 @@ test("playground keeps editors usable after rendering multi-row results", () =>
     )
   }))
 
+test("playground fits a 390 px phone without horizontal scroll", () =>
+  withPlayground(
+    async (page, origin) => {
+      await page.goto(`${origin}/examples/literals`)
+      await waitForCompilation(page, await editorModuleUrl(page))
+      const run = page.getByRole("button", { name: "Run", exact: true })
+      const benchmark = page.getByRole("button", { name: "Benchmark", exact: true })
+      assert.deepEqual((await run.boundingBox())?.y, (await benchmark.boundingBox())?.y)
+      await run.click()
+      await page.waitForFunction(
+        () => document.querySelectorAll(".rendered-result-card").length === 7,
+      )
+      await page.getByRole("textbox", { name: "Iterations/sample" }).fill("1000")
+      await benchmark.click()
+      await page.locator(".benchmark-output").filter({ hasText: "browser benchmark" }).waitFor()
+      const widths = await page.evaluate(() => [
+        document.documentElement.scrollWidth,
+        document.documentElement.clientWidth,
+      ])
+      assert.deepEqual(widths, [390, 390])
+    },
+    { viewport: { width: 390, height: 844 } },
+  ))
+
 test("playground follows the system dark scheme until a theme is chosen", () =>
   withPlayground(
     async (page, origin) => {
