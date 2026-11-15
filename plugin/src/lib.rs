@@ -1427,6 +1427,7 @@ impl TsPatternTransformer {
             }
             PApi::Chain("string", method, call) => string_chain_test(value, method, call),
             PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
+            PApi::Chain("bigint", method, call) => bigint_chain_test(value, method, call),
             _ => None,
         }
     }
@@ -3087,6 +3088,25 @@ fn number_chain_test(
         _ => return None,
     };
     Some(and(typeof_eq(value, "number"), test))
+}
+
+/// ts-pattern compares as `min <= value && max >= value` for `between`.
+fn bigint_chain_test(value: Expr, method: &str, call: &CallExpr) -> Option<Expr> {
+    let compare = |op, arg: &ExprOrSpread| bin(op, value.clone(), (*arg.expr).clone());
+    let test = match (method, call.args.as_slice()) {
+        ("between", [min, max]) => and(
+            bin(BinaryOp::LtEq, (*min.expr).clone(), value.clone()),
+            bin(BinaryOp::GtEq, (*max.expr).clone(), value.clone()),
+        ),
+        ("lt", [arg]) => compare(BinaryOp::Lt, arg),
+        ("gt", [arg]) => compare(BinaryOp::Gt, arg),
+        ("lte", [arg]) => compare(BinaryOp::LtEq, arg),
+        ("gte", [arg]) => compare(BinaryOp::GtEq, arg),
+        ("positive", _) => bin(BinaryOp::Gt, value.clone(), num_lit(0.0)),
+        ("negative", _) => bin(BinaryOp::Lt, value.clone(), num_lit(0.0)),
+        _ => return None,
+    };
+    Some(and(typeof_eq(value, "bigint"), test))
 }
 
 fn predicate_result(predicate: &Expr, input_expr: Expr) -> Expr {

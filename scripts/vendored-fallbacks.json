@@ -1,7 +1,4 @@
 {
-  "bigints.test.ts": {
-    "unsupported-pattern": 7
-  },
   "branded-nominal-types.test.ts": {
     "unsupported-pattern": 1
   },
