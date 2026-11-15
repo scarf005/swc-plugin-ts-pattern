@@ -37,6 +37,8 @@ const chains = {
     'match(input).with({ a: P.when((v) => { log.push("set a"); input.a = 5; return false; }) }, () => 1).with({ a: 5 }, () => 2).otherwise(() => 0)',
   multiplePatterns:
     'match(input).with({ kind: "a", value: P.select() }, { kind: "b", value: P.select() }, (v) => v).otherwise(() => 0)',
+  variadicTuples:
+    'match(input).with([1, ...P.array(P.number), "a"], () => "mid").with([...P.array(P.string).select()], (s) => s).with([P.any, ...P.array(), P.any], () => "two").with([P.select(), ...P.array()], (h) => h).otherwise(() => 0)',
   records:
     "match(input).with(P.record(P.string, P.number), (r) => Object.keys(r)).with(P.record(P.string, { a: P.select() }), (as) => as).otherwise(() => 0)",
   setsAndMaps:

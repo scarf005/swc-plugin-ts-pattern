@@ -380,8 +380,8 @@ The transformer handles chains that start from `match(value)` imported from `ts-
 Supported patterns:
 
 - primitive literals: string, number, bigint, boolean, `null`, `undefined`
-- object and array literal patterns
-- `P._`
+- object and array literal patterns, including one `...P.array(pattern?)` spread in an array
+- `P._`, `P.any`
 - `P.string`, `P.number`, `P.boolean`, `P.bigint`, `P.symbol`, `P.nullish`, `P.nonNullable`
 - `P.optional(pattern)`, `P.not(pattern)`, `P.union(...patterns)`, `P.array(pattern?)`, `P.instanceOf(Ctor)`, `P.when(predicate)`
 - chained `.optional()`, `.and(pattern)`, and `.or(pattern)` on patterns that provide them

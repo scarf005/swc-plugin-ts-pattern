@@ -1376,7 +1376,7 @@ impl TsPatternTransformer {
     ) -> Option<Expr> {
         let ctxt = self.unresolved_ctxt;
         match api {
-            PApi::Member("_") => Some(bool_lit(true)),
+            PApi::Member("_" | "any") => Some(bool_lit(true)),
             PApi::Member(name @ ("string" | "number" | "boolean" | "bigint" | "symbol")) => {
                 Some(typeof_eq(value, name))
             }
@@ -1934,29 +1934,121 @@ impl TsPatternTransformer {
         array: &ArrayLit,
         selections: &mut Vec<SelectionBinding>,
     ) -> Option<Expr> {
-        let len = array.elems.len();
-        let base = and(
-            array_is_array(value.clone(), self.unresolved_ctxt),
-            strict_eq(
-                member_expr(value.clone(), "length"),
-                Expr::Lit(Lit::Num(Number {
-                    span: DUMMY_SP,
-                    value: len as f64,
-                    raw: None,
-                })),
-            ),
-        );
-
-        array
+        let elems = array
             .elems
+            .iter()
+            .map(Option::as_ref)
+            .collect::<Option<Vec<_>>>()?;
+        let spreads = elems.iter().filter(|elem| elem.spread.is_some()).count();
+        let Some(middle) = elems.iter().position(|elem| elem.spread.is_some()) else {
+            let base = and(
+                array_is_array(value.clone(), self.unresolved_ctxt),
+                strict_eq(
+                    member_expr(value.clone(), "length"),
+                    num_lit(elems.len() as f64),
+                ),
+            );
+            return self.elements_test(base, &value, &elems, selections);
+        };
+        // `...P.array(pattern)` and its `.select()` iterate to a variadic
+        // pattern. ts-pattern throws on several of them.
+        let rest = &elems[middle].expr;
+        let is_array = |pattern: &Expr| matches!(self.p_api(pattern), Some(PApi::Call("array", _)));
+        let variadic = matches!(&**rest, Expr::Call(_))
+            && match self.select_call(rest) {
+                Some((_, base)) => base.is_some_and(is_array),
+                None => is_array(rest),
+            };
+        if spreads > 1 || !variadic {
+            return None;
+        }
+        // Like ts-pattern: compare `length`, then slice the head, the tail
+        // and the rest, then test them in that order.
+        let (head, tail) = (&elems[..middle], &elems[middle + 1..]);
+        let [head_ident, tail_ident, rest_ident] = [
+            private_ident!("_tsPatternHead"),
+            private_ident!("_tsPatternTail"),
+            private_ident!("_tsPatternRest"),
+        ];
+        self.pending_temps.borrow_mut().extend([
+            head_ident.clone(),
+            tail_ident.clone(),
+            rest_ident.clone(),
+        ]);
+        let slice = |args| call_expr(member_expr(value.clone(), "slice"), args);
+        let tail_len = || unary(UnaryOp::Minus, num_lit(tail.len() as f64));
+        let slices = [
+            assign_expr(
+                head_ident.clone(),
+                slice(vec![num_lit(0.0), num_lit(head.len() as f64)]),
+            ),
+            assign_expr(
+                tail_ident.clone(),
+                if tail.is_empty() {
+                    Expr::Array(ArrayLit {
+                        span: DUMMY_SP,
+                        elems: vec![],
+                    })
+                } else {
+                    slice(vec![tail_len()])
+                },
+            ),
+            assign_expr(
+                rest_ident.clone(),
+                slice(vec![
+                    num_lit(head.len() as f64),
+                    if tail.is_empty() {
+                        Expr::Ident(Ident::new(
+                            "Infinity".into(),
+                            DUMMY_SP,
+                            self.unresolved_ctxt,
+                        ))
+                    } else {
+                        tail_len()
+                    },
+                ]),
+            ),
+        ]
+        .into_iter()
+        .rev()
+        .fold(bool_lit(true), |rest, read| seq_expr(read, rest));
+        let base = and(
+            and(
+                array_is_array(value.clone(), self.unresolved_ctxt),
+                unary(
+                    UnaryOp::Bang,
+                    paren_expr(bin(
+                        BinaryOp::Lt,
+                        member_expr(value.clone(), "length"),
+                        num_lit((head.len() + tail.len()) as f64),
+                    )),
+                ),
+            ),
+            slices,
+        );
+        let base = self.elements_test(base, &ident_expr(&head_ident), head, selections)?;
+        let base = self.elements_test(base, &ident_expr(&tail_ident), tail, selections)?;
+        Some(and(
+            base,
+            self.pattern_test_with_selections(ident_expr(&rest_ident), rest, selections)?,
+        ))
+    }
+
+    /// Adds a test of each `elems` pattern against the same index of `value`.
+    fn elements_test(
+        &self,
+        base: Expr,
+        value: &Expr,
+        elems: &[&ExprOrSpread],
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
+        elems
             .iter()
             .enumerate()
             .try_fold(base, |acc, (index, elem)| {
-                let elem = elem.as_ref()?;
                 if elem.spread.is_some() {
                     return None;
                 }
-
                 let index = PropName::Num(Number {
                     span: DUMMY_SP,
                     value: index as f64,
@@ -2033,9 +2125,18 @@ impl Visit for BindingUses<'_> {
                 }
                 return;
             }
+            // Spreading `P.array(...)` marks it variadic for all later uses.
+            Expr::Array(array) => {
+                for elem in array.elems.iter().flatten() {
+                    if let (Some(_), Expr::Ident(ident)) = (elem.spread, &*elem.expr) {
+                        self.change(ident.to_id());
+                    }
+                }
+                expr.visit_children_with(self);
+                return;
+            }
             // Pattern literals and type assertions keep their context.
             Expr::Object(_)
-            | Expr::Array(_)
             | Expr::Paren(_)
             | Expr::TsAs(_)
             | Expr::TsConstAssertion(_)
