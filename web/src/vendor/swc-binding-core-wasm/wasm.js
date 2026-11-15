@@ -476,7 +476,8 @@ async function __wbg_load(module, imports) {
 
 function __wbg_get_imports() {
     const imports = {};
-    imports.wbg = {};
+    // The npm build of wasm_bg.wasm imports from __wbindgen_placeholder__.
+    imports.wbg = imports.__wbindgen_placeholder__ = {};
     imports.wbg.__wbg_BigInt_470dd987b8190f8e = function(arg0) {
         const ret = BigInt(getObject(arg0));
         return addHeapObject(ret);

@@ -11,6 +11,14 @@ const pluginPath = resolve(
   "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm",
 )
 const publicPath = resolve(webRoot, "public/swc_plugin_ts_pattern.wasm")
+const swcWasmPath = resolve(
+  pluginRoot,
+  "node_modules/@swc/binding_core_wasm/wasm_bg.wasm",
+)
+const vendorSwcWasmPath = resolve(
+  webRoot,
+  "src/vendor/swc-binding-core-wasm/wasm_bg.wasm",
+)
 
 const result = spawnSync("cargo", [
   "build",
@@ -27,3 +35,4 @@ if (result.status !== 0) {
 
 mkdirSync(dirname(publicPath), { recursive: true })
 copyFileSync(pluginPath, publicPath)
+copyFileSync(swcWasmPath, vendorSwcWasmPath)

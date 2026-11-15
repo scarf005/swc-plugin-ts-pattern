@@ -25,3 +25,4 @@ public/swc_plugin_ts_pattern.wasm
 *.njsproj
 *.sln
 *.sw?
+src/vendor/swc-binding-core-wasm/wasm_bg.wasm
