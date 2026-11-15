@@ -1325,7 +1325,9 @@ impl TsPatternTransformer {
             return self.p_api_test(value, api, selections);
         }
 
-        if is_zero_literal(pattern) {
+        // ts-pattern compares literals with Object.is: -0 !== 0 and NaN matches NaN.
+        let is_nan = matches!(pattern, Expr::Ident(ident) if ident.sym == "NaN" && ident.ctxt == self.unresolved_ctxt);
+        if is_zero_literal(pattern) || is_nan {
             return Some(call_expr(
                 member_expr(
                     Expr::Ident(Ident::new("Object".into(), DUMMY_SP, self.unresolved_ctxt)),
