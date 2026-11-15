@@ -22,6 +22,7 @@ const vendorSwcWasmPath = resolve(
 
 const result = spawnSync("cargo", [
   "build",
+  "--locked",
   "--release",
   "--target",
   "wasm32-wasip1",
