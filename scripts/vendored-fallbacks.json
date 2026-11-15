@@ -2,9 +2,6 @@
   "branded-nominal-types.test.ts": {
     "unsupported-pattern": 1
   },
-  "chainable.test.ts": {
-    "unsupported-pattern": 3
-  },
   "exhaustive-match.test.ts": {
     "unstable-argument": 1
   },

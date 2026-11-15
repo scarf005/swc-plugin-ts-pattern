@@ -167,8 +167,9 @@ enum PApi<'a> {
     Member(&'a str),
     /// `P.name(...)`
     Call(&'a str, &'a CallExpr),
-    /// `P.base.method(...)`
-    Chain(&'a str, &'a str, &'a CallExpr),
+    /// `P.base.method(...)`, or `previous.method(...)` where `previous` is a
+    /// chain on the same base
+    Chain(&'a str, &'a str, &'a CallExpr, Option<&'a Expr>),
     /// `pattern.optional()`, `pattern.and(other)` or `pattern.or(other)` on a
     /// chainable pattern
     Modifier(&'a str, &'a Expr, &'a CallExpr),
@@ -750,7 +751,13 @@ impl TsPatternTransformer {
             }
             return Some(PApi::Modifier(method, &member.obj, call));
         }
-        Some(PApi::Chain(self.p_member(&member.obj)?, method, call))
+        if let Some(kind) = self.p_member(&member.obj) {
+            return Some(PApi::Chain(kind, method, call, None));
+        }
+        match self.p_api(&member.obj)? {
+            PApi::Chain(kind, ..) => Some(PApi::Chain(kind, method, call, Some(&member.obj))),
+            _ => None,
+        }
     }
 
     fn select_call<'a>(&'a self, expr: &'a Expr) -> Option<(&'a CallExpr, Option<&'a Expr>)> {
@@ -1497,9 +1504,19 @@ impl TsPatternTransformer {
             PApi::Modifier("or", base, call) => {
                 self.union_test(value, [base, single_arg(call)?], selections)
             }
-            PApi::Chain("string", method, call) => string_chain_test(value, method, call),
-            PApi::Chain("number", method, call) => number_chain_test(value, method, call, ctxt),
-            PApi::Chain("bigint", method, call) => bigint_chain_test(value, method, call),
+            PApi::Chain(kind, method, call, previous) => {
+                let test = match kind {
+                    "string" => string_chain_test(value.clone(), method, call),
+                    "number" => number_chain_test(value.clone(), method, call, ctxt),
+                    "bigint" => bigint_chain_test(value.clone(), method, call),
+                    _ => None,
+                }?;
+                // ts-pattern chains a refinement as `P.intersection(previous, next)`.
+                match previous {
+                    Some(previous) => Some(and(self.unselected_test(value, previous)?, test)),
+                    None => Some(test),
+                }
+            }
             _ => None,
         }
     }
@@ -1550,7 +1567,7 @@ impl TsPatternTransformer {
                 _,
             )) => CHAINABLE,
             Some(PApi::Call("array", _)) => ARRAY_CHAINABLE,
-            Some(PApi::Chain("string" | "number" | "bigint", _, _)) => CHAINABLE,
+            Some(PApi::Chain("string" | "number" | "bigint", ..)) => CHAINABLE,
             Some(PApi::Modifier("optional", base, _)) if self.has_pattern_method(base, "and") => {
                 CHAINABLE
             }
@@ -1581,7 +1598,7 @@ impl TsPatternTransformer {
         }
         match self.p_api(pattern) {
             Some(PApi::Member("string" | "symbol" | "boolean" | "bigint" | "nullish")) => true,
-            Some(PApi::Chain("string", method, _)) => {
+            Some(PApi::Chain("string", method, ..)) => {
                 matches!(
                     method,
                     "startsWith" | "endsWith" | "includes" | "minLength" | "length" | "maxLength"
