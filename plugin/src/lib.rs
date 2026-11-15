@@ -1894,11 +1894,20 @@ impl TsPatternTransformer {
             .iter()
             .chain(value_selections.iter())
             .collect::<Vec<_>>();
-        // The values of a nested record are its result object, not its
-        // selections.
+        // A nested record forwards its selections only for entries that
+        // selected, so it must make all selections of the record.
+        let group = value_selections
+            .first()
+            .and_then(|selection| selection.capture_group.clone());
         if all_selections
             .iter()
             .any(|selection| selection.capture_group.is_some())
+            && (group.is_none()
+                || !key_selections.is_empty()
+                || !matches!(self.p_api(value_pattern), Some(PApi::Call("record", _)))
+                || value_selections
+                    .iter()
+                    .any(|selection| selection.capture_group != group))
         {
             return None;
         }
@@ -4054,12 +4063,31 @@ fn record_selection_match(
     let mut value_captures = Vec::new();
     let mut capture_decls = Vec::new();
     let mut value_arrays = Vec::new();
+    // The result of a nested record value, read once for all its selections.
+    let mut group_capture: Option<Ident> = None;
     for selection in value_selections {
         let array = private_ident!("_tsPatternRecordSelectedValues");
         value_arrays.push(array);
         // A temp already holds the value that the test reads.
         if let Expr::Ident(read) = &selection.value {
-            value_captures.push(read.clone());
+            value_captures.push(ident_expr(read));
+            continue;
+        }
+        if selection.capture_group.is_some() {
+            let capture = group_capture
+                .get_or_insert_with(|| {
+                    let capture = private_ident!("_tsPatternRecordSelectedValue");
+                    let mut replacer =
+                        ReadOnce::new(selection.value.clone(), capture.clone(), true);
+                    value_test.visit_mut_with(&mut replacer);
+                    capture_decls.push(capture.clone());
+                    capture
+                })
+                .clone();
+            value_captures.push(selection_capture_projection(
+                &capture,
+                selection.projection.clone(),
+            ));
             continue;
         }
         let capture = private_ident!("_tsPatternRecordSelectedValue");
@@ -4072,7 +4100,7 @@ fn record_selection_match(
             );
         }
         capture_decls.push(capture.clone());
-        value_captures.push(capture);
+        value_captures.push(ident_expr(&capture));
     }
     let selection = record_selection_object(
         &selected_keys,
@@ -4080,20 +4108,25 @@ fn record_selection_match(
         key_selections,
         value_selections,
     );
+    // With a nested record, only entries that selected add values.
+    let selected_from = match (&group_capture, value_arrays.first()) {
+        (Some(_), Some(array)) => array,
+        _ => &keys,
+    };
     let result = record_result_object(
         ident_expr(&matched),
         selection.clone(),
         bin(
             BinaryOp::NotEqEq,
-            member_expr(ident_expr(&keys), "length"),
+            member_expr(ident_expr(selected_from), "length"),
             num_lit(0.0),
         ),
     );
     let invalid_result = record_result_object(bool_lit(false), selection, bool_lit(false));
-    let push = |array: &Ident, item: &Ident| {
+    let push = |array: &Ident, item: Expr| {
         expr_stmt(call_expr(
             member_expr(ident_expr(array), "push"),
-            vec![ident_expr(item)],
+            vec![item],
         ))
     };
     let coerced_key_match = coerced_key
@@ -4104,22 +4137,31 @@ fn record_selection_match(
         if let Some((coerced_key_ident, _)) = &coerced_key {
             collect_selections.push(if_stmt(
                 ident_expr(coerced_key_match),
-                Stmt::Block(block_stmt(vec![push(&selected_keys, coerced_key_ident)])),
+                Stmt::Block(block_stmt(vec![push(&selected_keys, ident_expr(coerced_key_ident))])),
                 None,
             ));
         }
         if !key_selections.is_empty() {
             collect_selections.push(if_stmt(
                 ident_expr(&key_match),
-                Stmt::Block(block_stmt(vec![push(&selected_keys, &key_ident)])),
+                Stmt::Block(block_stmt(vec![push(&selected_keys, ident_expr(&key_ident))])),
                 None,
             ));
         }
     } else if !key_selections.is_empty() {
-        collect_selections.push(push(&selected_keys, &key_ident));
+        collect_selections.push(push(&selected_keys, ident_expr(&key_ident)));
     }
-    for (array, capture) in value_arrays.iter().zip(&value_captures) {
-        collect_selections.push(push(array, capture));
+    let value_pushes = value_arrays
+        .iter()
+        .zip(value_captures)
+        .map(|(array, capture)| push(array, capture));
+    match &group_capture {
+        Some(capture) => collect_selections.push(if_stmt(
+            member_expr(ident_expr(capture), "selected"),
+            Stmt::Block(block_stmt(value_pushes.collect())),
+            None,
+        )),
+        None => collect_selections.extend(value_pushes),
     }
     let mut entry_stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
     entry_stmts.push(const_stmt(
