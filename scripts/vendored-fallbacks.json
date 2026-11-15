@@ -32,8 +32,7 @@
     "isMatching": 2
   },
   "optional.test.ts": {
-    "no-terminal": 4,
-    "unsupported-pattern": 1
+    "no-terminal": 4
   },
   "primitive-values.test.ts": {
     "unsupported-pattern": 1
@@ -46,7 +45,7 @@
     "no-terminal": 1
   },
   "select.test.ts": {
-    "unsupported-pattern": 9
+    "unsupported-pattern": 2
   },
   "type-error.test.ts": {
     "unstable-argument": 1
@@ -56,10 +55,9 @@
     "unsupported-pattern": 1
   },
   "variadic-tuples.test.ts": {
-    "unsupported-pattern": 12,
     "no-terminal": 2
   },
   "when.test.ts": {
-    "unsupported-pattern": 3
+    "unsupported-pattern": 2
   }
 }

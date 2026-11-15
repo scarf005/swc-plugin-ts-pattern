@@ -1297,7 +1297,11 @@ impl TsPatternTransformer {
             for selection in selections {
                 let capture = capture_for(&selection.name)?;
                 let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
-                test.visit_mut_with(&mut replacer);
+                // A temp holds its final value only after the whole test,
+                // e.g. the items that `P.array` collects.
+                if !matches!(selection.value, Expr::Ident(_)) {
+                    test.visit_mut_with(&mut replacer);
+                }
                 if !replacer.found {
                     test = and(
                         test,
@@ -1443,7 +1447,7 @@ impl TsPatternTransformer {
                     .map(|arg| self.unselected_test(value.clone(), &arg.expr)),
                 and,
             ),
-            PApi::Call("array", call) => self.array_of_test(value, call),
+            PApi::Call("array", call) => self.array_of_test(value, call, selections),
             PApi::Call("set", call) => self.set_test(value, call),
             PApi::Call("map", call) => self.map_test(value, call),
             PApi::Call("record", call) => self.record_test(value, call, selections),
@@ -1609,37 +1613,98 @@ impl TsPatternTransformer {
         Some(or(strict_eq(value, undefined), test))
     }
 
-    fn array_of_test(&self, value: Expr, call: &CallExpr) -> Option<Expr> {
+    /// ts-pattern collects each selection of the items into an array, which
+    /// is empty for an empty array.
+    fn array_of_test(
+        &self,
+        value: Expr,
+        call: &CallExpr,
+        selections: &mut Vec<SelectionBinding>,
+    ) -> Option<Expr> {
         let array_test = array_is_array(value.clone(), self.unresolved_ctxt);
-        match call.args.as_slice() {
-            [] => Some(array_test),
-            [item] => {
-                let item_ident = private_ident!("_tsPatternItem");
-                let (item_test, temps) = self.with_local_temps(|| {
-                    self.unselected_test(ident_expr(&item_ident), &item.expr)
-                })?;
-                let body = if temps.is_empty() {
-                    BlockStmtOrExpr::Expr(Box::new(item_test))
-                } else {
-                    let mut stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
-                    stmts.push(return_stmt(item_test));
-                    BlockStmtOrExpr::BlockStmt(block_stmt(stmts))
-                };
-                // ts-pattern reads `length`, and calls `every` only on a
-                // non-empty array.
-                Some(and(
-                    array_test,
-                    or(
-                        strict_eq(member_expr(value.clone(), "length"), num_lit(0.0)),
-                        call_expr(
-                            member_expr(value, "every"),
-                            vec![arrow_expr(vec![Pat::Ident(item_ident.into())], body)],
-                        ),
-                    ),
-                ))
+        let [item] = call.args.as_slice() else {
+            return call.args.is_empty().then_some(array_test);
+        };
+        let item_ident = private_ident!("_tsPatternItem");
+        let ((mut item_test, item_selections), mut temps) = self.with_local_temps(|| {
+            let mut item_selections = Vec::new();
+            let test = self.pattern_test_with_selections(
+                ident_expr(&item_ident),
+                &item.expr,
+                &mut item_selections,
+            )?;
+            Some((test, item_selections))
+        })?;
+        // A name that one item selects twice gets both values; that stays on
+        // the runtime, as do nested record results.
+        let mut arrays: Vec<(Option<String>, Ident)> = Vec::new();
+        let mut pushes = Vec::new();
+        for selection in item_selections {
+            if selection.capture_group.is_some()
+                || arrays.iter().any(|(name, _)| name == &selection.name)
+            {
+                return None;
             }
-            _ => None,
+            let array = private_ident!("_tsPatternSelectedItems");
+            let item_value = if selection_needs_capture(&selection.value) {
+                let capture = private_ident!("_tsPatternSelected");
+                let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
+                item_test.visit_mut_with(&mut replacer);
+                if !replacer.found {
+                    item_test = and(
+                        item_test,
+                        seq_expr(
+                            assign_expr(capture.clone(), selection.value),
+                            bool_lit(true),
+                        ),
+                    );
+                }
+                temps.push(capture.clone());
+                ident_expr(&capture)
+            } else {
+                selection.value
+            };
+            pushes.push(call_expr(
+                member_expr(ident_expr(&array), "push"),
+                vec![item_value],
+            ));
+            arrays.push((selection.name, array));
         }
+        if let Some(pushed) = pushes.into_iter().reduce(seq_expr) {
+            item_test = and(item_test, seq_expr(pushed, bool_lit(true)));
+        }
+        let body = if temps.is_empty() {
+            BlockStmtOrExpr::Expr(Box::new(item_test))
+        } else {
+            let mut stmts = temps.into_iter().map(let_decl).collect::<Vec<_>>();
+            stmts.push(return_stmt(item_test));
+            BlockStmtOrExpr::BlockStmt(block_stmt(stmts))
+        };
+        // ts-pattern reads `length`, and calls `every` only on a non-empty
+        // array.
+        let items_test = or(
+            strict_eq(member_expr(value.clone(), "length"), num_lit(0.0)),
+            call_expr(
+                member_expr(value, "every"),
+                vec![arrow_expr(vec![Pat::Ident(item_ident.into())], body)],
+            ),
+        );
+        let items_test = arrays.iter().rev().fold(items_test, |test, (_, array)| {
+            let empty = Expr::Array(ArrayLit {
+                span: DUMMY_SP,
+                elems: vec![],
+            });
+            seq_expr(assign_expr(array.clone(), empty), test)
+        });
+        for (name, array) in arrays {
+            selections.push(SelectionBinding {
+                name,
+                value: ident_expr(&array),
+                ..Default::default()
+            });
+            self.pending_temps.borrow_mut().push(array);
+        }
+        Some(and(array_test, items_test))
     }
 
     fn set_test(&self, value: Expr, call: &CallExpr) -> Option<Expr> {
@@ -4556,12 +4621,13 @@ export function run(input: unknown) {
     }
 
     #[test]
-    fn keeps_unsupported_array_select_pattern_unchanged() {
+    fn collects_array_item_selections() {
         let output = transform(
             r#"import { match, P } from "ts-pattern";
 const result = match(input).with(P.array(P.select()), (value) => value).otherwise(() => []);"#,
         );
 
-        assert!(output.contains("match(input).with"), "{output}");
+        assert!(!output.contains(".with("), "{output}");
+        assert!(output.contains(".push("), "{output}");
     }
 }
