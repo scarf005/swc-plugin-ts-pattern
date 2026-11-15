@@ -1195,3 +1195,34 @@ test("object patterns keep the keys their literal creates", async () => {
     ["other", "no key", "last", "last", "last", "last"],
   )
 })
+
+test("selections read their value only after the pattern matches its type", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const pick = (input) =>
+      match(input)
+        .with([P.select()], (s) => ["one", s])
+        .with([P.select("h"), P.select("t")], (s) => s)
+        .otherwise(() => "other");
+    export const run = () => [pick(null), pick(undefined), pick(["a"]), pick(["a", "b"])];
+  `,
+    ["other", "other", ["one", "a"], { h: "a", t: "b" }],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
+
+test("selection names that are not identifiers become quoted keys", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const quoted = (input) => match(input).with({ a: P.select("my-name") }, (s) => s).otherwise(() => "other");
+    const spaced = (input) => match(input).with({ a: P.select("a b"), b: P.select("0") }, (s) => s).otherwise(() => "other");
+    const escaped = (input) => match(input).with({ a: P.select(\`x\\ny\`) }, (s) => s).otherwise(() => "other");
+    const record = (input) => match(input).with(P.record(P.select("k-1"), P.number.select("v 1")), (s) => s).otherwise(() => "other");
+    export const run = () => [quoted({ a: 1 }), spaced({ a: 1, b: 2 }), escaped({ a: 1 }), record({ x: 1 })];
+  `,
+    [{ "my-name": 1 }, { "a b": 1, 0: 2 }, { "x\ny": 1 }, { "k-1": ["x"], "v 1": [1] }],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
+})
