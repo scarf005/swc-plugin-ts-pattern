@@ -1306,15 +1306,25 @@ impl TsPatternTransformer {
                 .collect::<Option<Vec<_>>>()
         };
         let (alternatives, temps) = self.with_local_temps(lower)?;
+        // ts-pattern sets the names to `undefined` in `getSelectionKeys`
+        // order first, so the selection object keeps that key order.
+        let mut order = Vec::new();
+        for pattern in &patterns {
+            self.selection_keys(pattern, &mut order);
+        }
+        let position = |name: &Option<String>| order.iter().position(|key| key == name);
         let mut names = Vec::new();
         for (_, selected) in &alternatives {
             for selection in selected {
+                position(&selection.name)?;
                 if !names.contains(&selection.name) {
                     names.push(selection.name.clone());
                 }
             }
         }
-        if let Some((test, selected)) = self.alternatives_test(alternatives) {
+        names.sort_by_key(position);
+        if let Some((test, mut selected)) = self.alternatives_test(alternatives) {
+            selected.sort_by_key(|selection| position(&selection.name));
             self.pending_temps.borrow_mut().extend(temps);
             selections.extend(selected);
             return Some(test);
@@ -1426,6 +1436,43 @@ impl TsPatternTransformer {
         Some((test, selections))
     }
 
+    /// Adds the selection names of `pattern` to `keys` in the order of
+    /// ts-pattern's `getSelectionKeys`.
+    fn selection_keys(&self, pattern: &Expr, keys: &mut Vec<Option<String>>) {
+        let pattern = self.resolve_pattern_expr(pattern);
+        if let Some((call, base)) = self.select_call(pattern) {
+            if let Some((name, inner)) = select_parts(call, base) {
+                keys.push(name);
+                if let Some(inner) = inner {
+                    self.selection_keys(inner, keys);
+                }
+            }
+            return;
+        }
+        let patterns: Vec<&Expr> = match (self.p_api(pattern), pattern) {
+            (Some(PApi::Call("not" | "shape" | "when", _) | PApi::Chain(..)), _) => vec![],
+            (Some(PApi::Call(_, call)), _) => call.args.iter().map(|arg| &*arg.expr).collect(),
+            (Some(PApi::Modifier(_, base, call)), _) => [base]
+                .into_iter()
+                .chain(call.args.iter().map(|arg| &*arg.expr))
+                .collect(),
+            (None, Expr::Object(object)) => own_keys_order(object)
+                .into_iter()
+                .filter_map(|prop| Some(&*prop.as_prop()?.as_key_value()?.value))
+                .collect(),
+            (None, Expr::Array(array)) => array
+                .elems
+                .iter()
+                .flatten()
+                .map(|elem| &*elem.expr)
+                .collect(),
+            _ => vec![],
+        };
+        for pattern in patterns {
+            self.selection_keys(pattern, keys);
+        }
+    }
+
     fn pattern_test(&self, value: Expr, pattern: &Expr) -> Option<Expr> {
         let mut selections = Vec::new();
         self.pattern_test_with_selections(value, pattern, &mut selections)
@@ -1476,17 +1523,7 @@ impl TsPatternTransformer {
         let pattern = self.resolve_pattern_expr(pattern);
 
         if let Some((call, base)) = self.select_call(pattern) {
-            let (name, inner) = match (base, call.args.as_slice()) {
-                (None, []) => (None, None),
-                (Some(base), []) => (None, Some(base)),
-                (None, [arg]) => match selection_name(&arg.expr) {
-                    Some(name) => (Some(name), None),
-                    None => (None, Some(&*arg.expr)),
-                },
-                (Some(base), [name]) => (Some(selection_name(&name.expr)?), Some(base)),
-                (None, [name, inner]) => (Some(selection_name(&name.expr)?), Some(&*inner.expr)),
-                _ => return None,
-            };
+            let (name, inner) = select_parts(call, base)?;
             if name.as_deref() == Some("__proto__") {
                 return None;
             }
@@ -2004,7 +2041,11 @@ impl TsPatternTransformer {
         {
             return None;
         }
-        if all_selections.iter().any(|selection| {
+        // Each key selection collects the key, so a key that a `P.union`
+        // selects in part stays on the runtime.
+        if key_selections.iter().any(|selection| {
+            !matches!(&selection.value, Expr::Ident(ident) if ident.to_id() == key_ident.to_id())
+        }) || all_selections.iter().any(|selection| {
             selection
                 .name
                 .as_deref()
@@ -3284,6 +3325,25 @@ fn unsupported_record_selection_name(name: &str) -> bool {
     )
 }
 
+/// The name and the inner pattern of a `P.select` call or `.select()` on
+/// `base`.
+fn select_parts<'a>(
+    call: &'a CallExpr,
+    base: Option<&'a Expr>,
+) -> Option<(Option<String>, Option<&'a Expr>)> {
+    Some(match (base, call.args.as_slice()) {
+        (None, []) => (None, None),
+        (Some(base), []) => (None, Some(base)),
+        (None, [arg]) => match selection_name(&arg.expr) {
+            Some(name) => (Some(name), None),
+            None => (None, Some(&*arg.expr)),
+        },
+        (Some(base), [name]) => (Some(selection_name(&name.expr)?), Some(base)),
+        (None, [name, inner]) => (Some(selection_name(&name.expr)?), Some(&*inner.expr)),
+        _ => return None,
+    })
+}
+
 fn selection_name(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Lit(Lit::Str(str)) => Some(str.value.to_string_lossy().to_string()),
@@ -4230,14 +4290,20 @@ fn record_selection_match(
         if let Some((coerced_key_ident, _)) = &coerced_key {
             collect_selections.push(if_stmt(
                 ident_expr(coerced_key_match),
-                Stmt::Block(block_stmt(vec![push(&selected_keys, ident_expr(coerced_key_ident))])),
+                Stmt::Block(block_stmt(vec![push(
+                    &selected_keys,
+                    ident_expr(coerced_key_ident),
+                )])),
                 None,
             ));
         }
         if !key_selections.is_empty() {
             collect_selections.push(if_stmt(
                 ident_expr(&key_match),
-                Stmt::Block(block_stmt(vec![push(&selected_keys, ident_expr(&key_ident))])),
+                Stmt::Block(block_stmt(vec![push(
+                    &selected_keys,
+                    ident_expr(&key_ident),
+                )])),
                 None,
             ));
         }
