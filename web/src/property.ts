@@ -43,14 +43,8 @@ const repeatArbitrary = <T>(count: number, arbitrary: fc.Arbitrary<T>) =>
 
 const maybeGarbage = (value: unknown, key?: string): fc.Arbitrary<unknown> =>
   discriminatorKeys.has(key ?? "")
-    ? fc.oneof(
-      ...repeatArbitrary(8, fc.constant(value)),
-      genericGarbageArbitrary,
-    )
-    : fc.oneof(
-      fc.constant(value),
-      ...repeatArbitrary(3, genericGarbageArbitrary),
-    )
+    ? fc.oneof(...repeatArbitrary(8, fc.constant(value)), genericGarbageArbitrary)
+    : fc.oneof(fc.constant(value), ...repeatArbitrary(3, genericGarbageArbitrary))
 
 const arbitraryLike = (
   value: unknown,
@@ -60,15 +54,12 @@ const arbitraryLike = (
   if (Array.isArray(value)) {
     return fc.oneof(
       fc.constant(value),
-      fc.tuple(
-        ...value.map((item) =>
-          arbitraryLike(item, { depth: options.depth + 1 })
-        ),
-      ),
+      fc.tuple(...value.map((item) => arbitraryLike(item, { depth: options.depth + 1 }))),
     )
   }
   if (
-    value && typeof value === "object" &&
+    value &&
+    typeof value === "object" &&
     !(value instanceof Error) &&
     !(value instanceof Date) &&
     !(value instanceof RegExp) &&

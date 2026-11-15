@@ -6,9 +6,7 @@ import type { editor } from "monaco-editor/editor/editor.api.js"
 
 const webRoot = new URL("../", import.meta.url)
 
-const withPlayground = async (
-  run: (page: Page, origin: string) => Promise<void>,
-) => {
+const withPlayground = async (run: (page: Page, origin: string) => Promise<void>) => {
   const server = await createServer({
     root: fileURLToPath(webRoot),
     server: { host: "127.0.0.1", port: 0 },
@@ -44,11 +42,12 @@ const waitForCompilation = async (page: Page, url: string) => {
   await page.waitForFunction(async (url) => {
     const monaco = await import(url)
     const models: editor.ITextModel[] = monaco.editor.getModels()
-    const output = models.find((model) =>
-      model.uri.toString() === "file:///compiled-plugin.js"
-    )
-    return models.length === 3 && output?.getValue().includes("export") &&
+    const output = models.find((model) => model.uri.toString() === "file:///compiled-plugin.js")
+    return (
+      models.length === 3 &&
+      output?.getValue().includes("export") &&
       !output.getValue().includes(".with(")
+    )
   }, url)
 }
 
@@ -68,24 +67,20 @@ test("playground renders, compiles, restores history, edits and runs benchmarks"
     await page.getByRole("combobox").first().selectOption("objects")
     await waitForCompilation(page, moduleUrl)
     await page.goBack()
-    assert.deepEqual(
-      await page.getByRole("combobox").first().inputValue(),
-      "literals",
-    )
+    assert.deepEqual(await page.getByRole("combobox").first().inputValue(), "literals")
     await page.goForward()
-    assert.deepEqual(
-      await page.getByRole("combobox").first().inputValue(),
-      "objects",
-    )
+    assert.deepEqual(await page.getByRole("combobox").first().inputValue(), "objects")
     await page.getByRole("textbox", { name: "Iterations/sample" }).fill("1000")
     await page.getByRole("button", { name: "Benchmark", exact: true }).click()
-    await page.locator(".benchmark-output").filter({
-      hasText: "browser benchmark",
-    }).waitFor().catch(async (error) => {
-      throw new Error(
-        `${error.message}\n${await page.locator("body").innerText()}`,
-      )
-    })
+    await page
+      .locator(".benchmark-output")
+      .filter({
+        hasText: "browser benchmark",
+      })
+      .waitFor()
+      .catch(async (error) => {
+        throw new Error(`${error.message}\n${await page.locator("body").innerText()}`)
+      })
     const benchmarkText = await page.locator(".benchmark-output").textContent()
     assert(benchmarkText?.includes("checked"))
     assert(!/Infinity|NaN/.test(benchmarkText ?? ""))
@@ -96,49 +91,46 @@ test("playground renders, compiles, restores history, edits and runs benchmarks"
     const customSource =
       'import { match } from "ts-pattern"; export const inputs = [1, 2]; export const run = (value: number) => match(value).with(1, () => "one").otherwise(() => "other");'
     await page.context().grantPermissions(["clipboard-read", "clipboard-write"])
-    await page.evaluate(
-      (text) => navigator.clipboard.writeText(text),
-      customSource,
-    )
+    await page.evaluate((text) => navigator.clipboard.writeText(text), customSource)
     await page.keyboard.press("ControlOrMeta+V")
     await page.keyboard.press("End")
     await page.keyboard.press("Enter")
     await page.keyboard.type("// typed")
     const editedSource = `${customSource}\n// typed`
-    await page.waitForFunction(() =>
-      location.pathname === "/subdir/" &&
-      document.querySelector("select")?.value === "custom"
+    await page.waitForFunction(
+      () =>
+        location.pathname === "/subdir/" && document.querySelector("select")?.value === "custom",
     )
     assert.deepEqual(
       await page.evaluate(
         async (url) =>
-          (await import(url)).editor.getModels().find((
-            model: editor.ITextModel,
-          ) => model.uri.toString() === "file:///playground.ts").getValue(),
+          (await import(url)).editor
+            .getModels()
+            .find((model: editor.ITextModel) => model.uri.toString() === "file:///playground.ts")
+            .getValue(),
         moduleUrl,
       ),
       editedSource,
     )
     await page.waitForFunction(
       async (url) =>
-        (await import(url)).editor.getModels().find((
-          model: editor.ITextModel,
-        ) => model.uri.toString() === "file:///compiled-plugin.js")?.getValue()
+        (await import(url)).editor
+          .getModels()
+          .find((model: editor.ITextModel) => model.uri.toString() === "file:///compiled-plugin.js")
+          ?.getValue()
           .includes('"one"'),
       moduleUrl,
     )
     await page.getByRole("button", { name: "Run", exact: true }).click()
-    await page.waitForFunction(() =>
-      document.querySelectorAll(".rendered-result-card").length === 2
-    ).catch(async (error) => {
-      throw new Error(
-        `${error.message}\n${await page.locator("body").innerText()}`,
-      )
-    })
-    assert.deepEqual(
-      await page.locator(".rendered-result-card").allTextContents(),
-      ["1one", "2other"],
-    )
+    await page
+      .waitForFunction(() => document.querySelectorAll(".rendered-result-card").length === 2)
+      .catch(async (error) => {
+        throw new Error(`${error.message}\n${await page.locator("body").innerText()}`)
+      })
+    assert.deepEqual(await page.locator(".rendered-result-card").allTextContents(), [
+      "1one",
+      "2other",
+    ])
     assert.deepEqual(errors, [])
   }))
 
@@ -147,19 +139,17 @@ test("playground retries failed SWC and plugin downloads without reloading", () 
     await page.goto(origin)
     const moduleUrl = await editorModuleUrl(page)
     for (const asset of ["**/swc_plugin_ts_pattern.wasm", "**/wasm_bg.wasm"]) {
-      await page.route(
-        asset,
-        (route) =>
-          route.fulfill({ status: 503, body: "download failure fixture" }),
+      await page.route(asset, (route) =>
+        route.fulfill({ status: 503, body: "download failure fixture" }),
       )
       await page.goto(`${origin}/examples/literals`)
       await page.waitForFunction(
         async (url) =>
-          (await import(url)).editor.getModels().some((
-            model: editor.ITextModel,
-          ) =>
-            /Failed to load|503|WebAssembly|CompileError/.test(model.getValue())
-          ),
+          (await import(url)).editor
+            .getModels()
+            .some((model: editor.ITextModel) =>
+              /Failed to load|503|WebAssembly|CompileError/.test(model.getValue()),
+            ),
         moduleUrl,
       )
       await page.unroute(asset)
@@ -173,12 +163,12 @@ test("playground keeps editors usable after rendering multi-row results", () =>
     await page.goto(`${origin}/examples/literals`)
     await waitForCompilation(page, await editorModuleUrl(page))
     await page.getByRole("button", { name: "Run", exact: true }).click()
-    await page.waitForFunction(() =>
-      document.querySelectorAll(".rendered-result-card").length === 7
+    await page.waitForFunction(
+      () => document.querySelectorAll(".rendered-result-card").length === 7,
     )
-    const heights = await page.locator(".monaco-host").evaluateAll((hosts) =>
-      hosts.map((host) => host.getBoundingClientRect().height)
-    )
+    const heights = await page
+      .locator(".monaco-host")
+      .evaluateAll((hosts) => hosts.map((host) => host.getBoundingClientRect().height))
     assert(
       heights.every((height) => height >= 120),
       `Collapsed editors: ${heights.join(", ")}`,

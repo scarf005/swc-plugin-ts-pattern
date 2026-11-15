@@ -29,10 +29,7 @@ export const pluginPath = resolve(
 
 const pluginName = "@scarf005/swc-plugin-ts-pattern"
 const require = createRequire(import.meta.url)
-const swcWasmPackagePath = resolve(
-  pluginRoot,
-  "node_modules/@swc/binding_core_wasm",
-)
+const swcWasmPackagePath = resolve(pluginRoot, "node_modules/@swc/binding_core_wasm")
 
 export const hasSwcWasmBinding = () => existsSync(swcWasmPackagePath)
 
@@ -43,15 +40,9 @@ const cacheRootForPlugin = () => {
   return resolve(webRoot, ".swc-cache", `${size}-${Math.trunc(mtimeMs)}`)
 }
 
-export const transformWithSwcWasm = async (
-  { code, moduleType, plugin }: TransformOptions,
-) => {
-  const plugins: [string, Record<string, never>][] = plugin
-    ? [[pluginName, {}]]
-    : []
-  const pluginBytes = plugin
-    ? { [pluginName]: readFileSync(pluginPath) }
-    : undefined
+export const transformWithSwcWasm = async ({ code, moduleType, plugin }: TransformOptions) => {
+  const plugins: [string, Record<string, never>][] = plugin ? [[pluginName, {}]] : []
+  const pluginBytes = plugin ? { [pluginName]: readFileSync(pluginPath) } : undefined
 
   return await loadSwcWasm().transform(
     code,

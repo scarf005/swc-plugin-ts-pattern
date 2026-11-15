@@ -12,8 +12,5 @@ export const inputs = [
 
 export const run = (input: Input): string =>
   match(input)
-    .with(P.array({ title: P.string, content: P.string }), () =>
-      "a list of posts!")
-    .otherwise(() =>
-      "something else"
-    )
+    .with(P.array({ title: P.string, content: P.string }), () => "a list of posts!")
+    .otherwise(() => "something else")

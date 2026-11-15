@@ -13,27 +13,29 @@ const pluginRoot = fileURLToPath(new URL("../", import.meta.url))
 test("packed npm archive exposes a working WASM, transform API, loader and CLI", async () => {
   const directory = await mkdtemp(join(tmpdir(), "ts-pattern-package-test-"))
   try {
-    const { stdout: packed } = await execute("npm", [
-      "pack",
-      "--ignore-scripts",
-      "--json",
-      "--pack-destination",
-      directory,
-    ], { cwd: pluginRoot })
+    const { stdout: packed } = await execute(
+      "npm",
+      ["pack", "--ignore-scripts", "--json", "--pack-destination", directory],
+      { cwd: pluginRoot },
+    )
     const [{ filename }] = JSON.parse(packed)
     await writeFile(
       join(directory, "package.json"),
       JSON.stringify({ private: true, type: "module" }),
     )
-    await execute("npm", [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--package-lock=false",
-      join(directory, filename),
-      "@swc/core@~1.15.0",
-    ], { cwd: directory })
+    await execute(
+      "npm",
+      [
+        "install",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--package-lock=false",
+        join(directory, filename),
+        "@swc/core@~1.15.0",
+      ],
+      { cwd: directory },
+    )
     const env = { ...process.env }
     delete env.SWC_PLUGIN_TS_PATTERN_PATH
     const options = { cwd: directory, env }
@@ -45,17 +47,10 @@ const classify = (value: number) => match(value).with(1, () => "one").otherwise(
 console.log(JSON.stringify({ result: classify(1), compiled: !classify.toString().includes(".with("), args: process.argv.slice(2) }));
 `,
     )
-    for (
-      const args of [
-        [
-          "--import",
-          "@scarf005/swc-plugin-ts-pattern/register",
-          "entry.ts",
-          "argument",
-        ],
-        ["node_modules/.bin/ts-pattern-swc", "entry.ts", "argument"],
-      ]
-    ) {
+    for (const args of [
+      ["--import", "@scarf005/swc-plugin-ts-pattern/register", "entry.ts", "argument"],
+      ["node_modules/.bin/ts-pattern-swc", "entry.ts", "argument"],
+    ]) {
       const { stdout } = await execute(process.execPath, args, options)
       assert.deepEqual(JSON.parse(stdout), {
         result: "one",

@@ -9,16 +9,15 @@ import {
   measure,
   prepareBenchmarkInputs,
 } from "./benchmark.ts"
-import {
-  garbageInputPairsForInputs,
-  garbageValues,
-  seedFromString,
-} from "./property.ts"
+import { garbageInputPairsForInputs, garbageValues, seedFromString } from "./property.ts"
 import { formatValue } from "./runtime.ts"
 
-for (
-  const [baselineMs, optimizedMs] of [[0, 1], [1, 0], [0, 0], [1, Infinity]]
-) {
+for (const [baselineMs, optimizedMs] of [
+  [0, 1],
+  [1, 0],
+  [0, 0],
+  [1, Infinity],
+]) {
   test(`unmeasurable samples do not claim speedups (${baselineMs}, ${optimizedMs})`, () => {
     const baselineRun = () => 1
     const optimizedRun = () => 1
@@ -62,12 +61,7 @@ test("garbageValues generates deterministic edge-case inputs", () => {
     garbageValues({ seed, count: 4 }).map(formatValue),
     garbageValues({ seed, count: 4 }).map(formatValue),
   )
-  assert.deepEqual(garbageValues({ seed, count: 4 }).slice(0, 4), [
-    null,
-    undefined,
-    true,
-    false,
-  ])
+  assert.deepEqual(garbageValues({ seed, count: 4 }).slice(0, 4), [null, undefined, true, false])
 })
 
 test("garbageInputPairsForInputs uses fast-check to preserve paired input shape", () => {
@@ -75,21 +69,19 @@ test("garbageInputPairsForInputs uses fast-check to preserve paired input shape"
     garbageInputPairsForInputs([["a", "b"]], [["a", "b"]], {
       seed: 1,
       count: 4,
-    }).every((pair) =>
-      Array.isArray(pair.baselineInput) &&
-      Array.isArray(pair.optimizedInput) &&
-      pair.baselineInput.length === 2 &&
-      pair.optimizedInput.length === 2
+    }).every(
+      (pair) =>
+        Array.isArray(pair.baselineInput) &&
+        Array.isArray(pair.optimizedInput) &&
+        pair.baselineInput.length === 2 &&
+        pair.optimizedInput.length === 2,
     ),
     true,
   )
 })
 
 test("benchmarkInputsEqual compares formatted values", () => {
-  assert.deepEqual(
-    benchmarkInputsEqual([1n, new Set([1, 2])], [1n, new Set([1, 2])]),
-    true,
-  )
+  assert.deepEqual(benchmarkInputsEqual([1n, new Set([1, 2])], [1n, new Set([1, 2])]), true)
   assert.deepEqual(benchmarkInputsEqual([1], [2]), false)
 })
 
@@ -150,11 +142,11 @@ test("prepareBenchmarkInputs keeps compiled module inputs paired", () => {
   assert.deepEqual(
     prepareBenchmarkInputs({
       baseline: {
-        run: (input) => input instanceof BaselineClass ? "matched" : "missed",
+        run: (input) => (input instanceof BaselineClass ? "matched" : "missed"),
         inputs: [baselineInput],
       },
       optimized: {
-        run: (input) => input instanceof OptimizedClass ? "matched" : "missed",
+        run: (input) => (input instanceof OptimizedClass ? "matched" : "missed"),
         inputs: [optimizedInput],
       },
       fallbackInputs: [],
@@ -186,20 +178,23 @@ test("benchmarkModules reports identical generated code", () => {
 
 test("formatBenchmarkComparison labels samples and iterations", () => {
   assert.deepEqual(
-    formatBenchmarkComparison({
-      identicalCode: false,
-      baseline: { ms: 94 },
-      optimized: { ms: 2 },
-      speedup: 47,
-      sampleCount: 7,
-    }, {
-      count: 100000,
-      inputCount: 3,
-      generatedInputCount: 64,
-      checkedInputCount: 67,
-      rejectedInputCount: 4,
-      runtimeLabel: "browser benchmark",
-    }),
+    formatBenchmarkComparison(
+      {
+        identicalCode: false,
+        baseline: { ms: 94 },
+        optimized: { ms: 2 },
+        speedup: 47,
+        sampleCount: 7,
+      },
+      {
+        count: 100000,
+        inputCount: 3,
+        generatedInputCount: 64,
+        checkedInputCount: 67,
+        rejectedInputCount: 4,
+        runtimeLabel: "browser benchmark",
+      },
+    ),
     [
       "browser benchmark: 7 samples × 100000 iterations/sample",
       "inputs: 3 benchmarked, 64 generated, 67 checked, 4 rejected",

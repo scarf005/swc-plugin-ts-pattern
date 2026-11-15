@@ -14,6 +14,5 @@ export const inputs = [
 export const run = (content: Content): string =>
   match(content)
     .with({ type: "text", data: P.select() }, (value) => `<p>${value}</p>`)
-    .with({ type: P.union("img", "video"), data: P.select() }, (data) =>
-      JSON.stringify(data))
+    .with({ type: P.union("img", "video"), data: P.select() }, (data) => JSON.stringify(data))
     .exhaustive()

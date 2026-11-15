@@ -34,6 +34,4 @@ export const inputs = [
 ] satisfies Response[]
 
 export const run = (response: Response): number =>
-  isMatching({ data: P.array(postPattern) }, response)
-    ? response.data.length
-    : 0
+  isMatching({ data: P.array(postPattern) }, response) ? response.data.length : 0

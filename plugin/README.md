@@ -3,12 +3,12 @@
 SWC plugin that compiles supported [`ts-pattern`](https://github.com/gvergnaud/ts-pattern) `match` expressions into plain JavaScript ternaries, `switch` statements, or `if` chains.
 
 ```ts
-import { match, P } from "ts-pattern";
+import { match, P } from "ts-pattern"
 
 const label = match(input)
   .with({ type: "ok", value: P.number }, (value) => value.value)
   .with({ type: "error" }, () => 0)
-  .otherwise(() => -1);
+  .otherwise(() => -1)
 ```
 
 The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserving input evaluation and callback arguments. Unsupported chains retain the original ts-pattern runtime.
@@ -30,8 +30,8 @@ Supported versions:
 The package root resolves to the plugin WASM.
 
 ```ts
-import { transform } from "@swc/core";
-import { defaultPluginPath } from "@scarf005/swc-plugin-ts-pattern/transform";
+import { transform } from "@swc/core"
+import { defaultPluginPath } from "@scarf005/swc-plugin-ts-pattern/transform"
 
 const result = await transform(source, {
   filename: "input.ts",
@@ -39,7 +39,7 @@ const result = await transform(source, {
     parser: { syntax: "typescript" },
     experimental: { plugins: [[await defaultPluginPath(), {}]] },
   },
-});
+})
 ```
 
 ## Run TypeScript directly
@@ -87,10 +87,10 @@ deno run -A --preload ../plugin/register.mjs literals.ts
 ### Programmatic transform
 
 ```ts
-import { transformTsPattern } from "@scarf005/swc-plugin-ts-pattern/transform";
+import { transformTsPattern } from "@scarf005/swc-plugin-ts-pattern/transform"
 
-const result = await transformTsPattern(source, { filename: "foo.ts" });
-console.log(result.code);
+const result = await transformTsPattern(source, { filename: "foo.ts" })
+console.log(result.code)
 ```
 
 `transformTsPatternSync()` accepts the same options.

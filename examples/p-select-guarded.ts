@@ -11,10 +11,7 @@ export const inputs = [
 
 export const run = (input: Input): string =>
   match(input)
-    .with(
-      { author: P.select({ age: P.number.gt(18) }) },
-      (author) => author.name,
-    )
+    .with({ author: P.select({ age: P.number.gt(18) }) }, (author) => author.name)
     .with(
       {
         author: P.select("author", { age: P.number.gt(18) }),

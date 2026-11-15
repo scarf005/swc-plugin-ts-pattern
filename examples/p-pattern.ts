@@ -11,5 +11,4 @@ export const inputs = [
   { name: "Bob", age: 30 },
 ] satisfies User[]
 
-export const run = (input: User): string =>
-  isMatching(userPattern, input) ? "match" : "miss"
+export const run = (input: User): string => (isMatching(userPattern, input) ? "match" : "miss")

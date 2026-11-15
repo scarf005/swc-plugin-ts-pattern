@@ -63,12 +63,7 @@ h1 {
 
 .monaco-host .monaco-editor {
   --monaco-monospace-font:
-    "Sarasa Mono K Nerd Font",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Consolas,
-    monospace;
+    "Sarasa Mono K Nerd Font", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 pre {

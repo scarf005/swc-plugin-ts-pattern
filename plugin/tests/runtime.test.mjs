@@ -41,24 +41,19 @@ test(
         entry,
         `
 import { registerHooks } from "node:module";
-import { load, resolve } from ${
-          JSON.stringify(new URL("../loader.mjs", import.meta.url).href)
-        };
-import { defaultPluginPath, transformTsPattern, transformTsPatternSync } from ${
-          JSON.stringify(new URL("../transform.mjs", import.meta.url).href)
-        };
+import { load, resolve } from ${JSON.stringify(new URL("../loader.mjs", import.meta.url).href)};
+import { defaultPluginPath, transformTsPattern, transformTsPatternSync } from ${JSON.stringify(
+          new URL("../transform.mjs", import.meta.url).href,
+        )};
 registerHooks({ load, resolve });
 const path: string = await defaultPluginPath();
 const asyncCode: string = (await transformTsPattern("", { pluginPath: path })).code;
 const syncCode: string = transformTsPatternSync("", { pluginPath: path }).code;
 `,
       )
-      execFileSync("deno", [
-        "check",
-        "--config",
-        `${pluginRoot}deno.json`,
-        entry,
-      ], { encoding: "utf8" })
+      execFileSync("deno", ["check", "--config", `${pluginRoot}deno.json`, entry], {
+        encoding: "utf8",
+      })
     }),
 )
 
@@ -66,11 +61,9 @@ for (const mode of ["cli", "preload"]) {
   test(`Node ${mode} executes transformed TypeScript and forwards arguments`, () =>
     withEntry(async (entry) => {
       const args = mode === "cli" ? [cli, entry] : ["--import", register, entry]
-      const output = execFileSync(process.execPath, [
-        ...args,
-        "first",
-        "--flag",
-      ], { encoding: "utf8" })
+      const output = execFileSync(process.execPath, [...args, "first", "--flag"], {
+        encoding: "utf8",
+      })
       assert.deepEqual(JSON.parse(output), {
         result: "one",
         compiled: true,
@@ -78,39 +71,37 @@ for (const mode of ["cli", "preload"]) {
       })
     }))
 
-  test(`Deno ${mode} executes transformed TypeScript and forwards arguments`, {
-    skip: !denoAvailable,
-  }, () =>
-    withEntry(async (entry, directory) => {
-      const config = `${directory}/deno.json`
-      await writeFile(
-        config,
-        JSON.stringify({
-          imports: {
-            "ts-pattern": "npm:ts-pattern@5.9.0",
-            "@swc/core": "npm:@swc/core@~1.15.0",
-          },
-          nodeModulesDir: "auto",
-        }),
-      )
-      const args = mode === "cli"
-        ? [cli, entry]
-        : ["--preload", register, entry]
-      const output = execFileSync("deno", [
-        "run",
-        "-A",
-        "--config",
-        config,
-        ...args,
-        "first",
-        "--flag",
-      ], { encoding: "utf8" })
-      assert.deepEqual(JSON.parse(output), {
-        result: "one",
-        compiled: true,
-        args: ["first", "--flag"],
-      })
-    }))
+  test(
+    `Deno ${mode} executes transformed TypeScript and forwards arguments`,
+    {
+      skip: !denoAvailable,
+    },
+    () =>
+      withEntry(async (entry, directory) => {
+        const config = `${directory}/deno.json`
+        await writeFile(
+          config,
+          JSON.stringify({
+            imports: {
+              "ts-pattern": "npm:ts-pattern@5.9.0",
+              "@swc/core": "npm:@swc/core@~1.15.0",
+            },
+            nodeModulesDir: "auto",
+          }),
+        )
+        const args = mode === "cli" ? [cli, entry] : ["--preload", register, entry]
+        const output = execFileSync(
+          "deno",
+          ["run", "-A", "--config", config, ...args, "first", "--flag"],
+          { encoding: "utf8" },
+        )
+        assert.deepEqual(JSON.parse(output), {
+          result: "one",
+          compiled: true,
+          args: ["first", "--flag"],
+        })
+      }),
+  )
 }
 
 test("transform API respects parser, module and source map options", async () => {
@@ -154,12 +145,11 @@ for (const runtime of ["Node", "Deno"]) {
             module,
             'import { match } from "ts-pattern"; export const classify = (value: number) => match(value).with(1, () => "one").otherwise(() => "other");',
           )
-          const specifier = runtime === "Node"
-            ? "./child"
-            : `./child.${extension}`
-          const importClause = runtime === "Deno" && extension === "cts"
-            ? `import child from "${specifier}"; const { classify } = child;`
-            : `import { classify } from "${specifier}";`
+          const specifier = runtime === "Node" ? "./child" : `./child.${extension}`
+          const importClause =
+            runtime === "Deno" && extension === "cts"
+              ? `import child from "${specifier}"; const { classify } = child;`
+              : `import { classify } from "${specifier}";`
           await writeFile(
             entry,
             `${importClause} console.log(JSON.stringify({ result: classify(1), compiled: !classify.toString().includes(".with(") }));`,
@@ -176,9 +166,10 @@ for (const runtime of ["Node", "Deno"]) {
             }),
           )
           const command = runtime === "Node" ? process.execPath : "deno"
-          const args = runtime === "Node"
-            ? ["--import", register, entry]
-            : ["run", "-A", "--config", config, "--preload", register, entry]
+          const args =
+            runtime === "Node"
+              ? ["--import", register, entry]
+              : ["run", "-A", "--config", config, "--preload", register, entry]
           const output = execFileSync(command, args, { encoding: "utf8" })
           assert.deepEqual(JSON.parse(output), {
             result: "one",
@@ -207,11 +198,9 @@ for (const type of ["module", "commonjs"]) {
             : 'const { classify } = require("./child");'
         } ${report}`,
       )
-      const output = execFileSync(process.execPath, [
-        "--import",
-        register,
-        entry,
-      ], { encoding: "utf8" })
+      const output = execFileSync(process.execPath, ["--import", register, entry], {
+        encoding: "utf8",
+      })
       assert.deepEqual(JSON.parse(output), {
         result: "one",
         compiled: true,
@@ -220,28 +209,21 @@ for (const type of ["module", "commonjs"]) {
     }))
 }
 
-for (
-  const [specifier, extension] of [
-    ["js", "ts"],
-    ["js", "tsx"],
-    ["jsx", "tsx"],
-    ["mjs", "mts"],
-    ["cjs", "cts"],
-  ]
-) {
+for (const [specifier, extension] of [
+  ["js", "ts"],
+  ["js", "tsx"],
+  ["jsx", "tsx"],
+  ["mjs", "mts"],
+  ["cjs", "cts"],
+]) {
   test(`Node loader resolves ./child.${specifier} to child.${extension}`, () =>
     withEntry(async (entry, directory) => {
       await writeFile(`${directory}/package.json`, '{"type":"module"}')
       await writeFile(`${directory}/child.${extension}`, child)
-      await writeFile(
-        entry,
-        `import { classify } from "./child.${specifier}"; ${report}`,
-      )
-      const output = execFileSync(process.execPath, [
-        "--import",
-        register,
-        entry,
-      ], { encoding: "utf8" })
+      await writeFile(entry, `import { classify } from "./child.${specifier}"; ${report}`)
+      const output = execFileSync(process.execPath, ["--import", register, entry], {
+        encoding: "utf8",
+      })
       assert.deepEqual(JSON.parse(output), {
         result: "one",
         compiled: true,
@@ -250,14 +232,12 @@ for (
     }))
 }
 
-for (
-  const [args, status] of [
-    [[], 1],
-    [["--help"], 0],
-    [["--missing-option"], 1],
-    [["missing-entry.ts"], 1],
-  ]
-) {
+for (const [args, status] of [
+  [[], 1],
+  [["--help"], 0],
+  [["--missing-option"], 1],
+  [["missing-entry.ts"], 1],
+]) {
   test(`CLI ${JSON.stringify(args)} exits ${status}`, () => {
     const result = spawnSync(process.execPath, [cli, ...args], {
       encoding: "utf8",

@@ -7,8 +7,5 @@ export const inputs = [
 
 export const run = (input: Record<string, unknown>): string =>
   match(input)
-    .with(P.record({ name: P.string, age: P.number }), () =>
-      "User profiles with name and age")
-    .otherwise(() =>
-      "Different format"
-    )
+    .with(P.record({ name: P.string, age: P.number }), () => "User profiles with name and age")
+    .otherwise(() => "Different format")

@@ -6,10 +6,12 @@ export type Input =
   | [number, "*", number]
   | ["-", number]
 
-export const inputs = [[3, "*", 4], [1, "+", 2], [8, "-", 5], [
-  "-",
-  7,
-]] satisfies Input[]
+export const inputs = [
+  [3, "*", 4],
+  [1, "+", 2],
+  [8, "-", 5],
+  ["-", 7],
+] satisfies Input[]
 
 export const run = (input: Input): number =>
   match(input)

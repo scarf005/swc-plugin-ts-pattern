@@ -5,26 +5,22 @@ import { pluginPath, transformWithSwcWasm } from "./swc-wasm-transform.ts"
 
 const examplesRoot = new URL("../../examples/", import.meta.url)
 
-const transformExample = async (
-  source: string,
-  options: { plugin: boolean },
-) =>
+const transformExample = async (source: string, options: { plugin: boolean }) =>
   getModule(
-    (await transformWithSwcWasm({
-      code: source,
-      moduleType: "commonjs",
-      plugin: options.plugin,
-    })).code,
+    (
+      await transformWithSwcWasm({
+        code: source,
+        moduleType: "commonjs",
+        plugin: options.plugin,
+      })
+    ).code,
   )
 
 test("formatValue formats playground runtime values", () => {
   assert.deepEqual(formatValue(20n), "20n")
   assert.deepEqual(formatValue(Symbol.for("ok")), "Symbol(ok)")
   assert.deepEqual(formatValue(new Set([1, "a"])), 'Set(2) { 1, "a" }')
-  assert.deepEqual(
-    formatValue(new Map([["a", 1]])),
-    'Map(1) { "a" => 1 }',
-  )
+  assert.deepEqual(formatValue(new Map([["a", 1]])), 'Map(1) { "a" => 1 }')
 })
 
 const getExampleNames = async () => {
@@ -78,11 +74,13 @@ test("all match-based examples are compiled away", async () => {
     const source = await readFile(new URL(name, examplesRoot), "utf8")
     if (!source.includes("match(")) continue
 
-    const output = (await transformWithSwcWasm({
-      code: source,
-      moduleType: "commonjs",
-      plugin: true,
-    })).code
+    const output = (
+      await transformWithSwcWasm({
+        code: source,
+        moduleType: "commonjs",
+        plugin: true,
+      })
+    ).code
       // The no-match fallback throws ts-pattern's own NonExhaustiveError.
       .replace(/throw \(0, [\w$]+\.match\)\([\w$]+\)\.exhaustive\(\);/g, "")
 

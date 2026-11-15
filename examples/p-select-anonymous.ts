@@ -1,8 +1,6 @@
 import { match, P } from "ts-pattern"
 
-export type Input =
-  | { type: "post"; user: { name: string } }
-  | { type: "comment"; text: string }
+export type Input = { type: "post"; user: { name: string } } | { type: "comment"; text: string }
 
 export const inputs = [
   { type: "post", user: { name: "Gabriel" } },

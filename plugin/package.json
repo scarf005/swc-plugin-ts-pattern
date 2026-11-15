@@ -2,10 +2,35 @@
   "name": "@scarf005/swc-plugin-ts-pattern",
   "version": "0.2.0-beta.0",
   "description": "SWC plugin that compiles supported ts-pattern match expressions into plain JavaScript control flow",
-  "license": "AGPL-3.0-only",
-  "engines": {
-    "node": ">=22.15.0"
+  "keywords": [
+    "pattern-matching",
+    "swc-plugin",
+    "ts-pattern"
+  ],
+  "homepage": "https://github.com/scarf005/swc-plugin-ts-pattern#readme",
+  "bugs": {
+    "url": "https://github.com/scarf005/swc-plugin-ts-pattern/issues"
   },
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scarf005/swc-plugin-ts-pattern.git"
+  },
+  "bin": {
+    "ts-pattern-swc": "run.mjs"
+  },
+  "files": [
+    "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
+    "loader.mjs",
+    "register.mjs",
+    "run.mjs",
+    "transform.mjs",
+    "loader.d.ts",
+    "register.d.ts",
+    "run.d.ts",
+    "transform.d.ts",
+    "README.md"
+  ],
   "type": "commonjs",
   "main": "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
   "exports": {
@@ -29,21 +54,10 @@
     },
     "./package.json": "./package.json"
   },
-  "bin": {
-    "ts-pattern-swc": "run.mjs"
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
-  "files": [
-    "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
-    "loader.mjs",
-    "register.mjs",
-    "run.mjs",
-    "transform.mjs",
-    "loader.d.ts",
-    "register.d.ts",
-    "run.d.ts",
-    "transform.d.ts",
-    "README.md"
-  ],
   "scripts": {
     "build": "cargo build --locked --release --target wasm32-wasip1 && cp target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm.bin",
     "test": "cargo test --locked && npm run build && npm run test:runtime",
@@ -51,17 +65,9 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm test"
   },
-  "keywords": [
-    "swc-plugin",
-    "ts-pattern",
-    "pattern-matching"
-  ],
-  "peerDependencies": {
-    "@swc/core": "~1.15.0",
-    "ts-pattern": "^5.0.0"
-  },
   "devDependencies": {
     "@swc/binding_core_wasm": "https://github.com/scarf005/swc-wasm/releases/download/binding-core-wasm-plugin-v1.15.33-plugin.1/swc-binding_core_wasm-1.15.33.tgz",
+    "@swc/core": "1.15.33",
     "ts-pattern-5.0": "npm:ts-pattern@5.0.8",
     "ts-pattern-5.1": "npm:ts-pattern@5.1.2",
     "ts-pattern-5.2": "npm:ts-pattern@5.2.0",
@@ -71,24 +77,18 @@
     "ts-pattern-5.6": "npm:ts-pattern@5.6.2",
     "ts-pattern-5.7": "npm:ts-pattern@5.7.1",
     "ts-pattern-5.8": "npm:ts-pattern@5.8.0",
-    "ts-pattern-5.9": "npm:ts-pattern@5.9.2",
-    "@swc/core": "1.15.33"
+    "ts-pattern-5.9": "npm:ts-pattern@5.9.2"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/scarf005/swc-plugin-ts-pattern.git"
-  },
-  "bugs": {
-    "url": "https://github.com/scarf005/swc-plugin-ts-pattern/issues"
-  },
-  "homepage": "https://github.com/scarf005/swc-plugin-ts-pattern#readme",
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
+  "peerDependencies": {
+    "@swc/core": "~1.15.0",
+    "ts-pattern": "^5.0.0"
   },
   "peerDependenciesMeta": {
     "@swc/core": {
       "optional": true
     }
+  },
+  "engines": {
+    "node": ">=22.15.0"
   }
 }

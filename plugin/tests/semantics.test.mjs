@@ -6,8 +6,9 @@ import { transformTsPattern } from "../transform.mjs"
 
 const require = createRequire(import.meta.url)
 // Every ts-pattern 5.x minor, installed as `ts-pattern-5.<minor>` aliases.
-const versions = Object.keys(require("../package.json").devDependencies)
-  .filter((name) => name.startsWith("ts-pattern-"))
+const versions = Object.keys(require("../package.json").devDependencies).filter((name) =>
+  name.startsWith("ts-pattern-"),
+)
 
 const compile = async (source, plugin) => {
   const options = {
@@ -18,9 +19,9 @@ const compile = async (source, plugin) => {
   }
   const { code } = plugin
     ? await transformTsPattern(source, {
-      sourceMaps: false,
-      swcOptions: options,
-    })
+        sourceMaps: false,
+        swcOptions: options,
+      })
     : await transform(source, options)
   return code
 }
@@ -43,20 +44,14 @@ const evaluate = async (source, plugin, version = versions.at(-1)) => {
 // Runs on every version that exports each `P.<name>` the source uses.
 const versionsFor = (source) => {
   const names = [...source.matchAll(/\bP\.(\w+)/g)].map(([, name]) => name)
-  return versions.filter((version) =>
-    names.every((name) => name in require(version).P)
-  )
+  return versions.filter((version) => names.every((name) => name in require(version).P))
 }
 
 const assertEquivalent = async (source, expected) => {
   const baseline = await compile(source, false)
   const compiled = await compile(source, true)
   for (const version of versionsFor(source)) {
-    assert.deepEqual(
-      load(baseline, version)(),
-      expected,
-      `${version}: raw ts-pattern reference`,
-    )
+    assert.deepEqual(load(baseline, version)(), expected, `${version}: raw ts-pattern reference`)
     assert.deepEqual(load(compiled, version)(), expected, `${version}: ${compiled}`)
   }
   return compiled
@@ -64,56 +59,52 @@ const assertEquivalent = async (source, expected) => {
 
 // Ordinary functions are intentional here: callback arguments and dynamic this
 // are observable parts of the ts-pattern protocol, unlike arrow functions.
-for (
-  const { name, input, chain, declaration, expected } of [
-    {
-      name: "ternary",
-      input: "1",
-      chain: ".with(1, handler).otherwise(() => 0)",
-      expected: 1,
-    },
-    {
-      name: "primitive switch",
-      input: "1",
-      chain: ".with(1, handler).otherwise(() => 0)",
-      declaration: "arrow",
-      expected: 1,
-    },
-    {
-      name: "object switch",
-      input: "{ kind: 'a' }",
-      chain:
-        ".with({ kind: 'a' }, handler).with({ kind: 'b' }, () => 0).otherwise(() => 0)",
-      declaration: "arrow",
-      expected: { kind: "a" },
-    },
-    {
-      name: "assignment if",
-      input: "1",
-      chain: ".with(P.number, handler).exhaustive()",
-      expected: 1,
-    },
-    {
-      name: "assignment object switch",
-      input: "{ kind: 'a' }",
-      chain:
-        ".with({ kind: 'a' }, handler).with({ kind: 'b' }, () => 0).exhaustive()",
-      expected: { kind: "a" },
-    },
-    {
-      name: "anonymous selection",
-      input: "{ value: 1 }",
-      chain: ".with({ value: P.select() }, handler).otherwise(() => 0)",
-      expected: 1,
-    },
-    {
-      name: "named selection",
-      input: "{ value: 1 }",
-      chain: ".with({ value: P.select('value') }, handler).otherwise(() => 0)",
-      expected: { value: 1 },
-    },
-  ]
-) {
+for (const { name, input, chain, declaration, expected } of [
+  {
+    name: "ternary",
+    input: "1",
+    chain: ".with(1, handler).otherwise(() => 0)",
+    expected: 1,
+  },
+  {
+    name: "primitive switch",
+    input: "1",
+    chain: ".with(1, handler).otherwise(() => 0)",
+    declaration: "arrow",
+    expected: 1,
+  },
+  {
+    name: "object switch",
+    input: "{ kind: 'a' }",
+    chain: ".with({ kind: 'a' }, handler).with({ kind: 'b' }, () => 0).otherwise(() => 0)",
+    declaration: "arrow",
+    expected: { kind: "a" },
+  },
+  {
+    name: "assignment if",
+    input: "1",
+    chain: ".with(P.number, handler).exhaustive()",
+    expected: 1,
+  },
+  {
+    name: "assignment object switch",
+    input: "{ kind: 'a' }",
+    chain: ".with({ kind: 'a' }, handler).with({ kind: 'b' }, () => 0).exhaustive()",
+    expected: { kind: "a" },
+  },
+  {
+    name: "anonymous selection",
+    input: "{ value: 1 }",
+    chain: ".with({ value: P.select() }, handler).otherwise(() => 0)",
+    expected: 1,
+  },
+  {
+    name: "named selection",
+    input: "{ value: 1 }",
+    chain: ".with({ value: P.select('value') }, handler).otherwise(() => 0)",
+    expected: { value: 1 },
+  },
+]) {
   test(`${name} preserves both handler arguments`, async () => {
     const match = `match(input)${chain}`
     const code = await assertEquivalent(
@@ -125,20 +116,16 @@ for (
           return [selected, original === input, arguments.length, this === undefined];
         };
         ${
-        declaration === "arrow"
-          ? `const select = () => ${match}; const result = select();`
-          : `const result = ${match};`
-      }
+          declaration === "arrow"
+            ? `const select = () => ${match}; const result = select();`
+            : `const result = ${match};`
+        }
         return result;
       };
     `,
       [expected, true, 2, true],
     )
-    assert.doesNotMatch(
-      code,
-      /\.with\(/,
-      "the supported chain must be compiled",
-    )
+    assert.doesNotMatch(code, /\.with\(/, "the supported chain must be compiled")
   })
 }
 
@@ -154,9 +141,7 @@ for (const terminal of ["with", "otherwise"]) {
         }};
         return match(input)
           .with(1, ${terminal === "with" ? "callbacks.handler" : "() => 0"})
-          .otherwise(${
-        terminal === "otherwise" ? "callbacks.handler" : "() => 0"
-      });
+          .otherwise(${terminal === "otherwise" ? "callbacks.handler" : "() => 0"});
       };
     `,
       [terminal === "with" ? 1 : 2, true, terminal === "with" ? 2 : 1],
@@ -184,13 +169,9 @@ test("P.when invokes member predicates with one argument and no receiver", async
 
 for (const declaration of ["expression", "arrow", "assignment"]) {
   test(`${declaration} distinguishes positive and negative zero patterns`, async () => {
-    const terminal = declaration === "assignment"
-      ? "exhaustive()"
-      : "otherwise(() => 'other')"
-    const scalar =
-      `match(input).with(0, () => 'positive').with(-0, () => 'negative').${terminal}`
-    const object =
-      `match(input).with({ value: 0 }, () => 'positive').with({ value: -0 }, () => 'negative').${terminal}`
+    const terminal = declaration === "assignment" ? "exhaustive()" : "otherwise(() => 'other')"
+    const scalar = `match(input).with(0, () => 'positive').with(-0, () => 'negative').${terminal}`
+    const object = `match(input).with({ value: 0 }, () => 'positive').with({ value: -0 }, () => 'negative').${terminal}`
     const body = (chain) =>
       declaration === "arrow"
         ? `input => ${chain}`
@@ -517,7 +498,13 @@ test("record matching preserves getter reads and key/value evaluation", async ()
       ];
     };
   `,
-    [[false, ["first"]], [false, ["first"]], ["1", 1], ["1", 1], ["1", 1]],
+    [
+      [false, ["first"]],
+      [false, ["first"]],
+      ["1", 1],
+      ["1", 1],
+      ["1", 1],
+    ],
   )
 })
 
@@ -549,7 +536,11 @@ test("record value getters run before effectful key checks", async () => {
       return [[plain, plainEvents], [selected, selectedEvents], [keyMismatch, valueRegex.lastIndex]];
     };
   `,
-    [[true, [0]], [[0], [0]], [false, 1]],
+    [
+      [true, [0]],
+      [[0], [0]],
+      [false, 1],
+    ],
   )
   assert.doesNotMatch(code, /\.with\(/)
 })
@@ -706,7 +697,10 @@ test("map and set matching preserves iterator short-circuiting", async () => {
       return [[mapResult, mapEvents], [setResult, setEvents]];
     };
   `,
-    [[false, ["next", "predicate", "value"]], [false, ["next", "predicate"]]],
+    [
+      [false, ["next", "predicate", "value"]],
+      [false, ["next", "predicate"]],
+    ],
   )
 })
 
@@ -782,7 +776,10 @@ test("type-only error imports do not become runtime bindings", async () => {
 })
 
 // 5.0-5.2 throw a plain Error and do not export NonExhaustiveError.
-for (const [binding, match] of [["{ match }", "match"], ["* as TP", "TP.match"]]) {
+for (const [binding, match] of [
+  ["{ match }", "match"],
+  ["* as TP", "TP.match"],
+]) {
   test(`unmatched exhaustive through ${match} throws each version's error`, async () => {
     const source = `
       import ${binding} from "ts-pattern";
@@ -847,7 +844,10 @@ for (const declaration of ["arrow", "initializer"]) {
 }
 
 for (const declaration of ["arrow", "initializer"]) {
-  for (const [selector, handler] of [["P.select()", "(value) => value"], ["P.select('value')", "({ value }) => value"]]) {
+  for (const [selector, handler] of [
+    ["P.select()", "(value) => value"],
+    ["P.select('value')", "({ value }) => value"],
+  ]) {
     test(`${declaration} ${selector} passes the tested getter value to the handler`, async () => {
       const match = `match(input)
         .with({ kind: "a", value: ${selector} }, ${handler})
@@ -859,10 +859,10 @@ for (const declaration of ["arrow", "initializer"]) {
           let reads = 0;
           const input = { kind: "a", get value() { return ++reads; } };
           const select = ${
-          declaration === "arrow"
-            ? `(input) => ${match}.otherwise(() => -1)`
-            : `(input) => { const result = ${match}.exhaustive(); return result; }`
-        };
+            declaration === "arrow"
+              ? `(input) => ${match}.otherwise(() => -1)`
+              : `(input) => { const result = ${match}.exhaustive(); return result; }`
+          };
           return [select(input), reads];
         };
       `,
@@ -883,9 +883,7 @@ for (const key of ["P.string", "P.string.select('key')"]) {
           .with(P.record(${key}, { a: P.select("a"), b: P.select("b") }), (selected) => selected)
           .otherwise(() => null);
     `,
-      key === "P.string"
-        ? { a: [1, 3], b: [2, 4] }
-        : { key: ["x", "y"], a: [1, 3], b: [2, 4] },
+      key === "P.string" ? { a: [1, 3], b: [2, 4] } : { key: ["x", "y"], a: [1, 3], b: [2, 4] },
     )
     assert.doesNotMatch(code, /\.with\(/)
   })
@@ -925,7 +923,12 @@ test("isMatching compiles direct and curried checks", async () => {
       return inputs.map((input) => [isMatching(post, input), isPost(input), isMatching(P.string.startsWith("p"), input)]);
     };
   `,
-    [[true, true, false], [false, false, false], [false, false, false], [false, false, true]],
+    [
+      [true, true, false],
+      [false, false, false],
+      [false, false, false],
+      [false, false, true],
+    ],
   )
   assert.doesNotMatch(code, /isMatching\)?\(/, "isMatching calls must be compiled")
 })
@@ -1098,8 +1101,8 @@ for (const declaration of ["arrow", "ternary", "initializer"]) {
           declaration === "arrow"
             ? `(input) => ${match}.otherwise(() => "none")`
             : declaration === "ternary"
-            ? `(input) => [${match}.otherwise(() => "none")][0]`
-            : `(input) => { const result = ${match}.exhaustive(); return result; }`
+              ? `(input) => [${match}.otherwise(() => "none")][0]`
+              : `(input) => { const result = ${match}.exhaustive(); return result; }`
         };
         return [select(input), reads];
       };

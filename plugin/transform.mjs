@@ -32,8 +32,7 @@ const parserFor = (filename) => ({
   decorators: false,
 })
 
-const moduleTypeFor = (filename) =>
-  /\.cts$/i.test(filename) ? "commonjs" : "es6"
+const moduleTypeFor = (filename) => (/\.cts$/i.test(filename) ? "commonjs" : "es6")
 
 const buildOptions = (options = {}) => {
   const filename = options.filename ?? "input.ts"
@@ -49,8 +48,7 @@ const buildOptions = (options = {}) => {
       target: swcOptions.jsc?.target ?? "es2022",
       experimental: {
         ...swcOptions.jsc?.experimental,
-        cacheRoot: swcOptions.jsc?.experimental?.cacheRoot ??
-          cacheRootFor(pluginPath),
+        cacheRoot: swcOptions.jsc?.experimental?.cacheRoot ?? cacheRootFor(pluginPath),
         plugins: [
           [pluginPath, options.pluginOptions ?? {}],
           ...(swcOptions.jsc?.experimental?.plugins ?? []),
@@ -66,7 +64,7 @@ export const transformTsPattern = async (source, options = {}) =>
     source,
     buildOptions({
       ...options,
-      pluginPath: options.pluginPath ?? await defaultPluginPath(),
+      pluginPath: options.pluginPath ?? (await defaultPluginPath()),
     }),
   )
 

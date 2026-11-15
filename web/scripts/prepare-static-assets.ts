@@ -6,27 +6,12 @@ import { fileURLToPath } from "node:url"
 const scriptRoot = dirname(fileURLToPath(import.meta.url))
 const webRoot = resolve(scriptRoot, "..")
 const pluginRoot = resolve(webRoot, "../plugin")
-const pluginPath = resolve(
-  pluginRoot,
-  "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm",
-)
+const pluginPath = resolve(pluginRoot, "target/wasm32-wasip1/release/swc_plugin_ts_pattern.wasm")
 const publicPath = resolve(webRoot, "public/swc_plugin_ts_pattern.wasm")
-const swcWasmPath = resolve(
-  pluginRoot,
-  "node_modules/@swc/binding_core_wasm/wasm_bg.wasm",
-)
-const vendorSwcWasmPath = resolve(
-  webRoot,
-  "src/vendor/swc-binding-core-wasm/wasm_bg.wasm",
-)
+const swcWasmPath = resolve(pluginRoot, "node_modules/@swc/binding_core_wasm/wasm_bg.wasm")
+const vendorSwcWasmPath = resolve(webRoot, "src/vendor/swc-binding-core-wasm/wasm_bg.wasm")
 
-const result = spawnSync("cargo", [
-  "build",
-  "--locked",
-  "--release",
-  "--target",
-  "wasm32-wasip1",
-], {
+const result = spawnSync("cargo", ["build", "--locked", "--release", "--target", "wasm32-wasip1"], {
   cwd: pluginRoot,
   stdio: "inherit",
 })

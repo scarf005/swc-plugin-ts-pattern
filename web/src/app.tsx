@@ -4,11 +4,7 @@ import "./app.css"
 import { signal } from "@preact/signals"
 import { useEffect, useLayoutEffect, useRef } from "preact/hooks"
 import * as monaco from "monaco-editor/editor/editor.api.js"
-import {
-  benchmarkModules,
-  formatBenchmarkComparison,
-  prepareBenchmarkInputs,
-} from "./benchmark.ts"
+import { benchmarkModules, formatBenchmarkComparison, prepareBenchmarkInputs } from "./benchmark.ts"
 import { type ModuleType, transformInBrowser } from "./browser-transform.ts"
 import { cycleValue, getWheelStep } from "./example-wheel.ts"
 import { garbageInputPairsForInputs, seedFromString } from "./property.ts"
@@ -24,9 +20,7 @@ const monacoGlobals = globalThis as typeof globalThis & {
 
 monacoGlobals.MonacoEnvironment = {
   getWorker: (_workerId: string, label: string) =>
-    label === "typescript" || label === "javascript"
-      ? new TsWorker()
-      : new EditorWorker(),
+    label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
 }
 
 const exampleSources = import.meta.glob<string>("../../examples/*.ts", {
@@ -79,18 +73,18 @@ const routeForPattern = (id: string) => `${appBasePath}examples/${id}`
 const patternFromPath = (path = location.pathname) => {
   const match = path.match(/(?:^|\/)examples\/([^/]+)\/?$/)
   const id = match?.[1]
-  return commonPatterns.find((pattern) => pattern.id === id) ??
-    commonPatterns[0]
+  return commonPatterns.find((pattern) => pattern.id === id) ?? commonPatterns[0]
 }
 
 const DEFAULT_PATTERN = patternFromPath()
 const DEFAULT_SOURCE = DEFAULT_PATTERN?.source ?? ""
 
 const themeStorageKey = "ts-pattern-swc-playground-theme"
-const tsPatternTypes = import.meta.glob<string>(
-  "/node_modules/ts-pattern/dist/**/*.d.ts",
-  { eager: true, query: "?raw", import: "default" },
-)
+const tsPatternTypes = import.meta.glob<string>("/node_modules/ts-pattern/dist/**/*.d.ts", {
+  eager: true,
+  query: "?raw",
+  import: "default",
+})
 
 type TransformOptions = {
   code: string
@@ -98,7 +92,7 @@ type TransformOptions = {
   moduleType: ModuleType
 }
 type Theme = "white" | "dark"
-type PatternId = typeof commonPatterns[number]["id"] | "custom"
+type PatternId = (typeof commonPatterns)[number]["id"] | "custom"
 type RunEntry = {
   input: string
   output: string
@@ -172,10 +166,7 @@ let compileVersion = 0
 
 applyTheme(theme.value)
 
-const replaceCodeSpans = (
-  code: string,
-  replacements: Array<[string, string]>,
-) => {
+const replaceCodeSpans = (code: string, replacements: Array<[string, string]>) => {
   let output = ""
   let index = 0
   let quote = ""
@@ -196,9 +187,7 @@ const replaceCodeSpans = (
       index += 1
       continue
     }
-    const replacement = replacements.find(([from]) =>
-      code.startsWith(from, index)
-    )
+    const replacement = replacements.find(([from]) => code.startsWith(from, index))
     if (replacement) {
       output += replacement[1]
       index += replacement[0].length
@@ -264,7 +253,7 @@ const pushPath = (path: string) => {
 }
 
 const selectPattern = (
-  pattern: typeof commonPatterns[number],
+  pattern: (typeof commonPatterns)[number],
   options: { updatePath: boolean },
 ) => {
   selectedPattern.value = pattern.id
@@ -296,9 +285,7 @@ const runCurrent = async () => {
       moduleType: "commonjs",
     })
     const module = getModule(code)
-    const inputs: unknown[] = module.inputs?.length
-      ? module.inputs
-      : defaultBenchmarkInputs
+    const inputs: unknown[] = module.inputs?.length ? module.inputs : defaultBenchmarkInputs
     const entries = inputs.map((input) => {
       const rendered = module.run(input)
       return {
@@ -308,9 +295,7 @@ const runCurrent = async () => {
       }
     })
     runEntries.value = entries
-    runStatus.value = entries
-      .map((entry) => `${entry.input} => ${entry.output}`)
-      .join("\n")
+    runStatus.value = entries.map((entry) => `${entry.input} => ${entry.output}`).join("\n")
   } catch (error) {
     runStatus.value = error instanceof Error ? error.message : String(error)
   }
@@ -374,9 +359,7 @@ const runBenchmark = async () => {
       runtimeLabel: "browser benchmark",
     })
   } catch (error) {
-    benchmarkStatus.value = error instanceof Error
-      ? error.message
-      : String(error)
+    benchmarkStatus.value = error instanceof Error ? error.message : String(error)
   }
 }
 
@@ -393,9 +376,7 @@ const onIterationsInput = (event: Event) => {
 }
 
 const onThemeChange = (event: Event) => {
-  const value = (event.currentTarget as HTMLSelectElement).value === "dark"
-    ? "dark"
-    : "white"
+  const value = (event.currentTarget as HTMLSelectElement).value === "dark" ? "dark" : "white"
   theme.value = value
   applyTheme(value)
   try {
@@ -417,9 +398,7 @@ const onPatternWheel = (event: WheelEvent) => {
   event.stopPropagation()
   const nextId = cycleValue(
     patternIds,
-    selectedPattern.value === "custom"
-      ? DEFAULT_PATTERN.id
-      : selectedPattern.value,
+    selectedPattern.value === "custom" ? DEFAULT_PATTERN.id : selectedPattern.value,
     getWheelStep(event),
   )
   if (!nextId) return
@@ -428,9 +407,7 @@ const onPatternWheel = (event: WheelEvent) => {
   selectPattern(pattern, { updatePath: true })
 }
 
-const TypeScriptEditor = (
-  { value, theme, onChange }: TypeScriptEditorProps,
-) => {
+const TypeScriptEditor = ({ value, theme, onChange }: TypeScriptEditorProps) => {
   const hostRef = useRef<HTMLDivElement>(null)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const onChangeRef = useRef(onChange)
@@ -491,11 +468,7 @@ const CodeViewer = ({ value, theme, uri }: CodeViewerProps) => {
 
   useLayoutEffect(() => {
     if (!hostRef.current) return
-    const model = monaco.editor.createModel(
-      value,
-      "javascript",
-      monaco.Uri.parse(uri),
-    )
+    const model = monaco.editor.createModel(value, "javascript", monaco.Uri.parse(uri))
     const editor = monaco.editor.create(hostRef.current, {
       automaticLayout: true,
       fontFamily:
@@ -536,16 +509,16 @@ export const App = () => (
     <section class="toolbar">
       <h1>Playground</h1>
       <div class="controls">
-        <select
-          value={selectedPattern.value}
-          onChange={onPatternChange}
-          onWheel={onPatternWheel}
-        >
+        <select value={selectedPattern.value} onChange={onPatternChange} onWheel={onPatternWheel}>
           {selectedPattern.value === "custom" && (
-            <option value="custom" hidden>Custom</option>
+            <option value="custom" hidden>
+              Custom
+            </option>
           )}
           {commonPatterns.map((pattern) => (
-            <option key={pattern.id} value={pattern.id}>{pattern.label}</option>
+            <option key={pattern.id} value={pattern.id}>
+              {pattern.label}
+            </option>
           ))}
         </select>
         <select value={theme.value} onChange={onThemeChange}>
@@ -554,25 +527,21 @@ export const App = () => (
         </select>
         <label class="control-field">
           <span>Iterations/sample</span>
-          <input
-            value={iterations.value}
-            onInput={onIterationsInput}
-            inputMode="numeric"
-          />
+          <input value={iterations.value} onInput={onIterationsInput} inputMode="numeric" />
         </label>
-        <button type="button" onClick={runCurrent}>Run</button>
-        <button type="button" onClick={runBenchmark}>Benchmark</button>
+        <button type="button" onClick={runCurrent}>
+          Run
+        </button>
+        <button type="button" onClick={runBenchmark}>
+          Benchmark
+        </button>
       </div>
     </section>
     <section class="panes">
       <section class="pane-stack">
         <label class="pane">
           <span>TypeScript</span>
-          <TypeScriptEditor
-            value={source.value}
-            theme={theme.value}
-            onChange={onEditorChange}
-          />
+          <TypeScriptEditor value={source.value} theme={theme.value} onChange={onEditorChange} />
         </label>
         <label class="pane">
           <span>Compiled ts-pattern JS</span>
@@ -598,28 +567,25 @@ export const App = () => (
         <h2>Rendered result</h2>
         <div class="rendered-results-grid">
           {runEntries.value.map((entry, index) => (
-            <article
-              class="rendered-result-card"
-              key={`${index}-${entry.input}`}
-            >
+            <article class="rendered-result-card" key={`${index}-${entry.input}`}>
               <pre>{entry.input}</pre>
-              {typeof entry.rendered === "string"
-                ? isHtmlLike(entry.rendered)
-                  ? (
-                    <div
-                      class="rendered-result-preview"
-                      dangerouslySetInnerHTML={{ __html: entry.rendered }}
-                    />
-                  )
-                  : <div class="rendered-result-preview">{entry.rendered}</div>
-                : <div class="rendered-result-preview">{entry.output}</div>}
+              {typeof entry.rendered === "string" ? (
+                isHtmlLike(entry.rendered) ? (
+                  <div
+                    class="rendered-result-preview"
+                    dangerouslySetInnerHTML={{ __html: entry.rendered }}
+                  />
+                ) : (
+                  <div class="rendered-result-preview">{entry.rendered}</div>
+                )
+              ) : (
+                <div class="rendered-result-preview">{entry.output}</div>
+              )}
             </article>
           ))}
         </div>
       </section>
     )}
-    {benchmarkStatus.value && (
-      <pre class="benchmark-output">{benchmarkStatus.value}</pre>
-    )}
+    {benchmarkStatus.value && <pre class="benchmark-output">{benchmarkStatus.value}</pre>}
   </main>
 )

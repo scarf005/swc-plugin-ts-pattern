@@ -2,10 +2,7 @@ import { match, P } from "ts-pattern"
 
 export type Input = Set<string | number>
 
-export const inputs = [
-  new Set([1, 2, 3]),
-  new Set(["a", "b"]),
-] satisfies Input[]
+export const inputs = [new Set([1, 2, 3]), new Set(["a", "b"])] satisfies Input[]
 
 export const run = (input: Input): string =>
   match(input)

@@ -13,11 +13,7 @@ export const getModule = (code: string): ModuleExports => {
     throw new Error(`Unsupported import: ${name}`)
   }
 
-  new Function("require", "exports", "module", code)(
-    requireShim,
-    exports,
-    module,
-  )
+  new Function("require", "exports", "module", code)(requireShim, exports, module)
 
   const loaded = module.exports as Partial<ModuleExports>
   if (typeof loaded.run !== "function") {
@@ -33,10 +29,7 @@ export const getModule = (code: string): ModuleExports => {
 export const formatValue = (value: unknown): string =>
   formatValueInternal(value, new WeakSet<object>())
 
-const formatValueInternal = (
-  value: unknown,
-  seen: WeakSet<object>,
-): string => {
+const formatValueInternal = (value: unknown, seen: WeakSet<object>): string => {
   if (value === null) return "null"
   if (value === undefined) return "undefined"
 
@@ -63,31 +56,28 @@ const formatValueInternal = (
   seen.add(value)
   try {
     if (Array.isArray(value)) {
-      return `[${
-        value.map((item) => formatValueInternal(item, seen)).join(", ")
-      }]`
+      return `[${value.map((item) => formatValueInternal(item, seen)).join(", ")}]`
     }
 
     if (value instanceof Set) {
-      return `Set(${value.size}) { ${
-        [...value].map((item) => formatValueInternal(item, seen)).join(", ")
-      } }`
+      return `Set(${value.size}) { ${[...value]
+        .map((item) => formatValueInternal(item, seen))
+        .join(", ")} }`
     }
 
     if (value instanceof Map) {
-      return `Map(${value.size}) { ${
-        [...value].map(([key, entryValue]) =>
-          `${formatValueInternal(key, seen)} => ${
-            formatValueInternal(entryValue, seen)
-          }`
-        ).join(", ")
-      } }`
+      return `Map(${value.size}) { ${[...value]
+        .map(
+          ([key, entryValue]) =>
+            `${formatValueInternal(key, seen)} => ${formatValueInternal(entryValue, seen)}`,
+        )
+        .join(", ")} }`
     }
 
     const name = value.constructor?.name
     const prefix = name && name !== "Object" ? `${name} ` : ""
-    const entries = Object.entries(value).map(([key, entryValue]) =>
-      `${key}: ${formatValueInternal(entryValue, seen)}`
+    const entries = Object.entries(value).map(
+      ([key, entryValue]) => `${key}: ${formatValueInternal(entryValue, seen)}`,
     )
     return `${prefix}{ ${entries.join(", ")} }`
   } finally {

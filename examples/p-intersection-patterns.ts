@@ -18,12 +18,6 @@ export const inputs = [
 
 export const run = (input: Input): string =>
   match(input)
-    .with(
-      { prop: P.intersection(P.instanceOf(A), { foo: "bar" }) },
-      ({ prop }) => prop.foo,
-    )
-    .with(
-      { prop: P.intersection(P.instanceOf(A), { foo: "baz" }) },
-      ({ prop }) => prop.foo,
-    )
+    .with({ prop: P.intersection(P.instanceOf(A), { foo: "bar" }) }, ({ prop }) => prop.foo)
+    .with({ prop: P.intersection(P.instanceOf(A), { foo: "baz" }) }, ({ prop }) => prop.foo)
     .otherwise(() => "")

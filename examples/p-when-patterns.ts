@@ -2,9 +2,13 @@ import { match, P } from "ts-pattern"
 
 export type Input = { score: number }
 
-export const inputs = [{ score: 10 }, { score: 5 }, {
-  score: 2,
-}] satisfies Input[]
+export const inputs = [
+  { score: 10 },
+  { score: 5 },
+  {
+    score: 2,
+  },
+] satisfies Input[]
 
 export const run = (input: Input): string =>
   match<Input>(input)

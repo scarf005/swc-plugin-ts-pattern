@@ -16,10 +16,7 @@ type BenchCase = {
 }
 
 const examplesRoot = new URL("../examples/", import.meta.url)
-const tsPatternBenchmarkRoot = new URL(
-  "../vendor/ts-pattern-benchmark/tests/",
-  import.meta.url,
-)
+const tsPatternBenchmarkRoot = new URL("../vendor/ts-pattern-benchmark/tests/", import.meta.url)
 
 const digitInputs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
@@ -140,11 +137,13 @@ const getExampleNames = async () => {
 
 const transformExample = async (source: string, options: { plugin: boolean }) =>
   getModule(
-    (await transformWithSwcWasm({
-      code: source,
-      moduleType: "commonjs",
-      plugin: options.plugin,
-    })).code,
+    (
+      await transformWithSwcWasm({
+        code: source,
+        moduleType: "commonjs",
+        plugin: options.plugin,
+      })
+    ).code,
   )
 
 const loadExample = async (name: string): Promise<BenchCase> => {
@@ -163,11 +162,10 @@ const loadExample = async (name: string): Promise<BenchCase> => {
     baseline,
     optimized,
     fallbackInputs: baseline.inputs,
-    generatedInputPairs: garbageInputPairsForInputs(
-      baseline.inputs,
-      optimized.inputs,
-      { seed: seedFromString(name), count: 64 },
-    ),
+    generatedInputPairs: garbageInputPairsForInputs(baseline.inputs, optimized.inputs, {
+      seed: seedFromString(name),
+      count: 64,
+    }),
   })
 
   return {
@@ -195,9 +193,7 @@ const assertSameOutputs = (id: string, targets: BenchTarget[]) => {
       const actual = target.module.run(input)
       if (!Object.is(actual, expected)) {
         throw new Error(
-          `${id}: ${target.label} returned ${String(actual)} instead of ${
-            String(expected)
-          }`,
+          `${id}: ${target.label} returned ${String(actual)} instead of ${String(expected)}`,
         )
       }
     }
@@ -254,8 +250,6 @@ const [examples, tsPatternBenchmarkCases] = await Promise.all([
 
 for (const { id, targets } of [...tsPatternBenchmarkCases, ...examples]) {
   test(id, async ({ bench }) => {
-    await bench.compare(
-      ...targets.map(({ label, module }) => bench(label, createRunner(module))),
-    )
+    await bench.compare(...targets.map(({ label, module }) => bench(label, createRunner(module))))
   })
 }

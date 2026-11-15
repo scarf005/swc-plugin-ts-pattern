@@ -5,7 +5,11 @@ const pattern = ["a", P.union("a", "b")] as const
 
 type Narrowed = P.narrow<Input, typeof pattern>
 
-export const inputs = [["a", "a"], ["a", "b"], ["c", "c"]] satisfies Input[]
+export const inputs = [
+  ["a", "a"],
+  ["a", "b"],
+  ["c", "c"],
+] satisfies Input[]
 
 export const run = (input: Input): string =>
   match(input)

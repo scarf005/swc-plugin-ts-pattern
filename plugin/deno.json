@@ -4,12 +4,7 @@
     "@swc/core": "npm:@swc/core@~1.15.0"
   },
   "compilerOptions": {
-    "lib": [
-      "ES2022",
-      "DOM"
-    ]
+    "lib": ["ES2022", "DOM"]
   },
-  "allowScripts": [
-    "npm:@swc/core@~1.15.0"
-  ]
+  "allowScripts": ["npm:@swc/core@~1.15.0"]
 }

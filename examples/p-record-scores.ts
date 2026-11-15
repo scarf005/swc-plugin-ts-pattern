@@ -2,10 +2,7 @@ import { match, P } from "ts-pattern"
 
 export type Input = Record<string, number>
 
-export const inputs = [
-  { alice: 100, bob: 85, charlie: 92 },
-  { one: 1 },
-] satisfies Input[]
+export const inputs = [{ alice: 100, bob: 85, charlie: 92 }, { one: 1 }] satisfies Input[]
 
 export const run = (input: Input): string =>
   match(input)

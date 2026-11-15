@@ -1,12 +1,6 @@
 // @ts-self-types="./loader.d.ts"
 import { readFileSync, statSync } from "node:fs"
-import {
-  dirname,
-  extname,
-  isAbsolute,
-  join,
-  resolve as resolvePath,
-} from "node:path"
+import { dirname, extname, isAbsolute, join, resolve as resolvePath } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { transformTsPatternSync } from "./transform.mjs"
 
@@ -26,8 +20,7 @@ export const initialize = (data = {}) => {
 }
 
 const isRelativeSpecifier = (specifier) =>
-  specifier.startsWith("./") || specifier.startsWith("../") ||
-  specifier.startsWith("/")
+  specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/")
 
 const maybeFile = (url) => {
   try {
@@ -49,9 +42,7 @@ export const resolve = (specifier, context, nextResolve) => {
     const base = context.parentURL?.startsWith("file:")
       ? fileURLToPath(new URL(".", context.parentURL))
       : cwd
-    const path = isAbsolute(specifier)
-      ? specifier
-      : resolvePath(base, specifier)
+    const path = isAbsolute(specifier) ? specifier : resolvePath(base, specifier)
     const stem = path.slice(0, path.length - extension.length)
 
     for (const candidate of candidates) {
@@ -65,8 +56,7 @@ export const resolve = (specifier, context, nextResolve) => {
 
 const packageType = (directory) => {
   try {
-    return JSON.parse(readFileSync(join(directory, "package.json"), "utf8"))
-      .type
+    return JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).type
   } catch (error) {
     if (error?.code !== "ENOENT") throw error
     const parent = dirname(directory)
@@ -97,8 +87,7 @@ export const load = (url, context, nextLoad) => {
     pluginPath: options.pluginPath,
     swcOptions: {
       ...options.swcOptions,
-      module: options.swcOptions?.module ??
-        { type: format === "commonjs" ? "commonjs" : "es6" },
+      module: options.swcOptions?.module ?? { type: format === "commonjs" ? "commonjs" : "es6" },
     },
   })
 

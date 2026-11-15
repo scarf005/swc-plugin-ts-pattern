@@ -11,7 +11,7 @@ const env = () => {
   }
 }
 
-const pluginPath = env() ?? await defaultPluginPath()
+const pluginPath = env() ?? (await defaultPluginPath())
 
 initialize({ pluginPath })
 registerHooks({ load, resolve })
