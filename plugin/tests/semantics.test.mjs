@@ -1284,6 +1284,18 @@ test("arms with several patterns pass only the selections of the pattern that ma
   `,
     [{ x: 1 }, { y: 3 }, { x: 1, y: 3 }, 1, 2, 1, { b: 1 }],
   )
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    const anonymous = (input) =>
+      match(input).with({ a: P.select(), b: 1 }, { c: P.select() }, (s) => s).otherwise(() => "other");
+    const named = (input) =>
+      match(input).with({ a: P.select("x") }, [P.select("x"), 2], (s) => s).otherwise(() => "other");
+    export const run = () => [anonymous({ a: 1, b: 1 }), anonymous({ a: 1, b: 2, c: 3 }), named({ a: 1 }), named([4, 2])];
+  `,
+    [1, 3, { x: 1 }, { x: 4 }],
+  )
+  assert.doesNotMatch(code, /\.with\(/, "arms whose patterns select the same names must be compiled")
 })
 
 test("optional selections read their property once", async () => {

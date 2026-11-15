@@ -1015,18 +1015,34 @@ impl TsPatternTransformer {
         // Drop temporaries left by an attempt that failed to lower.
         self.pending_temps.take();
         let mut selections = Vec::new();
-        let pattern_test = if arm.patterns.len() == 1
-            && matches!(*arm.patterns[0], Expr::Invalid(_))
-        {
-            bool_lit(true)
-        } else {
-            join_tests(
-                arm.patterns.iter().map(|pattern| {
-                    self.pattern_test_with_selections(match_input.clone(), pattern, &mut selections)
-                }),
-                or,
-            )?
-        };
+        let pattern_test =
+            if arm.patterns.len() == 1 && matches!(*arm.patterns[0], Expr::Invalid(_)) {
+                bool_lit(true)
+            } else if arm.patterns.len() == 1 {
+                self.pattern_test_with_selections(
+                    match_input.clone(),
+                    &arm.patterns[0],
+                    &mut selections,
+                )?
+            } else {
+                let mut patterns = Vec::with_capacity(arm.patterns.len());
+                for pattern in &arm.patterns {
+                    let mut pattern_selections = Vec::new();
+                    let test = self.pattern_test_with_selections(
+                        match_input.clone(),
+                        pattern,
+                        &mut pattern_selections,
+                    )?;
+                    patterns.push((test, pattern_selections));
+                }
+                if patterns
+                    .iter()
+                    .any(|(_, selections)| !selections.is_empty())
+                {
+                    return self.multi_pattern_parts(match_input, guard_input, arm, patterns);
+                }
+                join_tests(patterns.into_iter().map(|(test, _)| Some(test)), or)?
+            };
 
         // A record that selects nothing makes no selections, so the handler
         // gets the input; this works only when the record makes every
@@ -1101,6 +1117,76 @@ impl TsPatternTransformer {
                 match_input,
             );
         }
+        Some((test, handler_input, captures))
+    }
+
+    /// ts-pattern tries the patterns in order with one shared selection
+    /// object, so each name takes its value from the pattern that matched.
+    /// Patterns that select different names stay on the runtime, because a
+    /// pattern that failed can leave names that the matched pattern lacks.
+    fn multi_pattern_parts(
+        &self,
+        match_input: Expr,
+        guard_input: Expr,
+        arm: &MatchArm,
+        patterns: Vec<(Expr, Vec<SelectionBinding>)>,
+    ) -> Option<(Expr, Expr, Vec<Ident>)> {
+        let mut names: Vec<Option<String>> = Vec::new();
+        for selection in &patterns[0].1 {
+            if !names.contains(&selection.name) {
+                names.push(selection.name.clone());
+            }
+        }
+        if patterns.iter().any(|(_, selections)| {
+            selections.iter().any(|selection| {
+                selection.capture_group.is_some() || !names.contains(&selection.name)
+            }) || names
+                .iter()
+                .any(|name| !selections.iter().any(|selection| &selection.name == name))
+        }) {
+            return None;
+        }
+        let named_captures = names
+            .iter()
+            .map(|name| (name.clone(), private_ident!("_tsPatternSelected")))
+            .collect::<Vec<_>>();
+        let capture_for = |name: &Option<String>| {
+            named_captures
+                .iter()
+                .find(|(capture_name, _)| capture_name == name)
+                .map(|(_, capture)| capture.clone())
+        };
+        let mut tests = Vec::with_capacity(patterns.len());
+        for (mut test, selections) in patterns {
+            for selection in selections {
+                let capture = capture_for(&selection.name)?;
+                let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
+                test.visit_mut_with(&mut replacer);
+                if !replacer.found {
+                    test = and(
+                        test,
+                        seq_expr(assign_expr(capture, selection.value), bool_lit(true)),
+                    );
+                }
+            }
+            tests.push(Some(test));
+        }
+        let mut test = join_tests(tests, or)?;
+        if let Some(guard) = &arm.guard {
+            test = and(test, predicate_result(guard, guard_input));
+        }
+        let mut captures = self.pending_temps.take();
+        let handler_selections = named_captures
+            .iter()
+            .map(|(name, capture)| SelectionBinding {
+                name: name.clone(),
+                value: ident_expr(capture),
+                capture_group: None,
+                projection: None,
+            })
+            .collect();
+        let handler_input = selection_handler_input(match_input, handler_selections)?;
+        captures.extend(named_captures.into_iter().map(|(_, capture)| capture));
         Some((test, handler_input, captures))
     }
 
