@@ -150,9 +150,8 @@ const describe = (value, seen = new Set()) => {
     return { map: [...value].map(([name, item]) => [describe(name, seen), describe(item, seen)]) }
   }
   if (Array.isArray(value)) return value.map((item) => describe(item, seen))
-  return Object.fromEntries(
-    Object.entries(value).map(([name, item]) => [name, describe(item, seen)]),
-  )
+  // An entry list keeps the key order, which `deepEqual` ignores in objects.
+  return { object: Object.entries(value).map(([name, item]) => [name, describe(item, seen)]) }
 }
 
 // The result or error and every logged access of one run.
@@ -196,3 +195,109 @@ export const run = (input: any, log: string[]) => ${chain};
     }
   })
 }
+
+// Pattern sources for the fuzz test. A chain that stays on the runtime
+// still must give the same results.
+const { pattern } = fc.letrec((tie) => ({
+  pattern: fc.oneof(
+    { depthSize: "small", withCrossShrink: true },
+    fc.constantFrom(
+      "0",
+      "1",
+      "-0",
+      "NaN",
+      '"a"',
+      '""',
+      "true",
+      "null",
+      "undefined",
+      "1n",
+      "P._",
+      "P.any",
+      "P.unknown",
+      "P.string",
+      "P.number",
+      "P.bigint",
+      "P.boolean",
+      "P.nullish",
+      "P.nonNullable",
+      "P.instanceOf(Base)",
+      "P.array()",
+      "P.set()",
+      "P.map()",
+      "P.select()",
+      'P.select("x")',
+      'P.select("y")',
+      "P.number.optional()",
+      "P.number.int().positive()",
+      "P.number.between(0, 1)",
+      'P.string.startsWith("a")',
+      "P.string.minLength(1).select()",
+      "P.bigint.gt(0n)",
+      "P.number.or(P.string)",
+      'P.when((v) => (log.push("when"), v === 1))',
+    ),
+    fc
+      .uniqueArray(fc.tuple(key, tie("pattern")), { maxLength: 3, selector: ([name]) => name })
+      .map((entries) => `{ ${entries.map(([name, p]) => `"${name}": ${p}`).join(", ")} }`),
+    fc.array(tie("pattern"), { maxLength: 3 }).map((items) => `[${items.join(", ")}]`),
+    fc
+      .tuple(tie("pattern"), tie("pattern"), tie("pattern"))
+      .map(([head, rest, tail]) => `[${head}, ...P.array(${rest}), ${tail}]`),
+    fc
+      .tuple(
+        fc.constantFrom("optional", "not", "array", "set", "select", "shape", "record"),
+        tie("pattern"),
+      )
+      .map(([api, p]) => `P.${api}(${p})`),
+    fc
+      .tuple(fc.constantFrom('"x"', '"y"'), tie("pattern"))
+      .map(([name, p]) => `P.select(${name}, ${p})`),
+    fc
+      .tuple(
+        fc.constantFrom("union", "intersection", "record", "map"),
+        tie("pattern"),
+        tie("pattern"),
+      )
+      .map(([api, a, b]) => `P.${api}(${a}, ${b})`),
+    fc
+      .tuple(fc.constantFrom(".or", ".and"), tie("pattern"), tie("pattern"))
+      .map(([method, a, b]) => `P.shape(${a})${method}(${b})`),
+  ),
+}))
+
+const arm = fc
+  .tuple(fc.array(pattern, { minLength: 1, maxLength: 2 }), fc.boolean())
+  .map(([patterns, guarded]) =>
+    [...patterns, ...(guarded ? ['(v) => (log.push("guard"), Boolean(v))'] : [])].join(", "),
+  )
+const chain = fc
+  .tuple(
+    fc.array(arm, { minLength: 1, maxLength: 3 }),
+    fc.constantFrom('.otherwise(() => "other")', ".exhaustive()"),
+  )
+  .map(
+    ([arms, end]) =>
+      `match(input)${arms.map((args, index) => `.with(${args}, (s) => [${index}, s])`).join("")}${end}`,
+  )
+
+test("generated chains match raw ts-pattern on generated inputs", async () => {
+  const version = versions.at(-1)
+  await fc.assert(
+    fc.asyncProperty(
+      chain,
+      fc.array(spec, { minLength: 1, maxLength: 10 }),
+      async (chain, values) => {
+        const source = `import { match, P } from "ts-pattern";
+const Base = globalThis.DifferentialClasses.Base;
+export const run = (input: any, log: string[]) => ${chain};
+`
+        const [raw, compiled] = await Promise.all([compile(source, false), compile(source, true)])
+        const [rawRun, compiledRun] = [load(raw, version), load(compiled, version)]
+        for (const value of values)
+          assert.deepEqual(observe(compiledRun, value), observe(rawRun, value))
+      },
+    ),
+    { numRuns: Number(process.env.FUZZ_RUNS ?? 200) },
+  )
+})

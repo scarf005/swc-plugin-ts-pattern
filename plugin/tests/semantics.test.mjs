@@ -1879,3 +1879,57 @@ test("P.optional and P.array keep the key order of the pattern when they match n
     ["x,y,z", "x,y,z"],
   )
 })
+
+test("P.select with an undefined pattern selects any value", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () => [
+      match(0).with(P.select("x", undefined), (s) => s).otherwise(() => "other"),
+      match({ a: 1 }).with({ a: P.select(undefined) }, (s) => s).otherwise(() => "other"),
+    ];
+  `,
+    [{ x: 0 }, 1],
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+test("P.optional in a P.record value selects the value that its pattern selected", async () => {
+  const code = await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () =>
+      match({ a: 1, b: undefined })
+        .with(P.record(P.optional(P.number.and(P.string).or(P.select("x")))), (s) => s)
+        .otherwise(() => "other");
+  `,
+    { x: [1, undefined] },
+  )
+  assert.doesNotMatch(code, /\.with\(/)
+})
+
+// ts-pattern shares one selection object between the patterns of an arm.
+// Here the first pattern fails at `c` and the second writes `x` before `y`.
+test("arms with several patterns keep the key order of the pattern that matched", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () =>
+      match({ a: 0, b: 2 })
+        .with({ c: 1, a: P.select("y"), b: P.select("x") }, { b: P.select("x"), a: P.select("y") }, (s) => Object.keys(s).join())
+        .otherwise(() => "other");
+  `,
+    "x,y",
+  )
+})
+
+test("P.select with an undefined pattern in a P.record key selects numeric keys", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () =>
+      JSON.stringify(match({ 1: 2, a: 3 }).with(P.record(P.select("k", undefined), P.number), (s) => s).otherwise(() => 0));
+  `,
+    '{"k":[1,"1","a"]}',
+  )
+})

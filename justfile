@@ -15,6 +15,10 @@ test:
 test-browser:
     cd web && npm ci && env -u WAYLAND_DISPLAY -u DISPLAY npm run test:browser
 
+# Runs the fuzz test of generated match chains `runs` times.
+fuzz runs="20000":
+    cd plugin && npm run build && FUZZ_RUNS={{ runs }} node --test --test-name-pattern="^generated chains" tests/differential.test.mjs
+
 bench:
     cd web && npm ci --silent && npm run --silent bench
 
