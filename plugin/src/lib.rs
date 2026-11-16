@@ -2099,9 +2099,13 @@ impl TsPatternTransformer {
             return None;
         }
         // Each key selection collects the key, so a key that a `P.union`
-        // selects in part stays on the runtime.
+        // selects in part stays on the runtime. A name that the key and the
+        // value both select collects both into one array.
         if key_selections.iter().any(|selection| {
             !matches!(&selection.value, Expr::Ident(ident) if ident.to_id() == key_ident.to_id())
+                || value_selections
+                    .iter()
+                    .any(|value| value.name == selection.name)
         }) || all_selections.iter().any(|selection| {
             selection
                 .name
