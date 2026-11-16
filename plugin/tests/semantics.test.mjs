@@ -1933,3 +1933,15 @@ test("P.select with an undefined pattern in a P.record key selects numeric keys"
     '{"k":[1,"1","a"]}',
   )
 })
+
+// ts-pattern pushes the key and then the value of each entry to one array.
+test("P.record keys and values that select the same name collect both", async () => {
+  await assertEquivalent(
+    `
+    import { match, P } from "ts-pattern";
+    export const run = () =>
+      JSON.stringify(match({ kind: 0 }).with(P.record(P.select("x"), P.select("x", 0)), (s) => s).otherwise(() => 0));
+  `,
+    '{"x":["kind",0]}',
+  )
+})
