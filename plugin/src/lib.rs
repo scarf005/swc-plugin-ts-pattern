@@ -787,6 +787,31 @@ impl TsPatternTransformer {
         Some((call, Some(&member.obj)))
     }
 
+    /// The name and the inner pattern of a `P.select` call or `.select()` on
+    /// `base`. ts-pattern selects any value when the inner pattern is
+    /// `undefined`.
+    fn select_parts<'a>(
+        &self,
+        call: &'a CallExpr,
+        base: Option<&'a Expr>,
+    ) -> Option<(Option<String>, Option<&'a Expr>)> {
+        let (name, inner) = match (base, call.args.as_slice()) {
+            (None, []) => (None, None),
+            (Some(base), []) => (None, Some(base)),
+            (None, [arg]) => match selection_name(&arg.expr) {
+                Some(name) => (Some(name), None),
+                None => (None, Some(&*arg.expr)),
+            },
+            (Some(base), [name]) => (Some(selection_name(&name.expr)?), Some(base)),
+            (None, [name, inner]) => (Some(selection_name(&name.expr)?), Some(&*inner.expr)),
+            _ => return None,
+        };
+        let inner = inner.filter(
+            |inner| !matches!(inner, Expr::Ident(ident) if self.is_global_undefined(ident)),
+        );
+        Some((name, inner))
+    }
+
     /// Whether the runtime value of `base` has `method`: `P.when(f)` has no
     /// chain methods and `P.array(x)` has no `and` or `or`.
     fn has_chain_method(&self, base: &Expr, method: &str) -> bool {
@@ -1441,7 +1466,7 @@ impl TsPatternTransformer {
     fn selection_keys(&self, pattern: &Expr, keys: &mut Vec<Option<String>>) {
         let pattern = self.resolve_pattern_expr(pattern);
         if let Some((call, base)) = self.select_call(pattern) {
-            if let Some((name, inner)) = select_parts(call, base) {
+            if let Some((name, inner)) = self.select_parts(call, base) {
                 keys.push(name);
                 if let Some(inner) = inner {
                     self.selection_keys(inner, keys);
@@ -1543,7 +1568,7 @@ impl TsPatternTransformer {
         let pattern = self.resolve_pattern_expr(pattern);
 
         if let Some((call, base)) = self.select_call(pattern) {
-            let (name, inner) = select_parts(call, base)?;
+            let (name, inner) = self.select_parts(call, base)?;
             if name.as_deref() == Some("__proto__") {
                 return None;
             }
@@ -1740,13 +1765,10 @@ impl TsPatternTransformer {
         let pattern = self.resolve_pattern_expr(pattern);
         if let Some((call, base)) = self.select_call(pattern) {
             // A selection matches what its inner pattern matches.
-            return match (base, call.args.as_slice()) {
-                (Some(base), _) => self.rejects_numbers(base),
-                (None, [.., inner]) if selection_name(&inner.expr).is_none() => {
-                    self.rejects_numbers(&inner.expr)
-                }
-                _ => false,
-            };
+            return self
+                .select_parts(call, base)
+                .and_then(|(_, inner)| inner)
+                .is_some_and(|inner| self.rejects_numbers(inner));
         }
         match self.p_api(pattern) {
             Some(PApi::Member("string" | "symbol" | "boolean" | "bigint" | "nullish")) => true,
@@ -3349,25 +3371,6 @@ fn unsupported_record_selection_name(name: &str) -> bool {
             | "toString"
             | "valueOf"
     )
-}
-
-/// The name and the inner pattern of a `P.select` call or `.select()` on
-/// `base`.
-fn select_parts<'a>(
-    call: &'a CallExpr,
-    base: Option<&'a Expr>,
-) -> Option<(Option<String>, Option<&'a Expr>)> {
-    Some(match (base, call.args.as_slice()) {
-        (None, []) => (None, None),
-        (Some(base), []) => (None, Some(base)),
-        (None, [arg]) => match selection_name(&arg.expr) {
-            Some(name) => (Some(name), None),
-            None => (None, Some(&*arg.expr)),
-        },
-        (Some(base), [name]) => (Some(selection_name(&name.expr)?), Some(base)),
-        (None, [name, inner]) => (Some(selection_name(&name.expr)?), Some(&*inner.expr)),
-        _ => return None,
-    })
 }
 
 fn selection_name(expr: &Expr) -> Option<String> {
