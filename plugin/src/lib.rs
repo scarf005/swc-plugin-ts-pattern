@@ -7,7 +7,7 @@ use swc_core::{
     common::{errors::SourceMapper, BytePos, EqIgnoreSpan, Span, Spanned, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        utils::{prepend_stmts, private_ident},
+        utils::{contains_ident_ref, prepend_stmts, private_ident},
         visit::{Visit, VisitMut, VisitMutWith, VisitWith},
     },
     plugin::{errors::HANDLER, plugin_transform, proxies::TransformPluginProgramMetadata},
@@ -4276,10 +4276,16 @@ fn record_selection_match(
         let mut replacer = ReadOnce::new(selection.value.clone(), capture.clone(), true);
         value_test.visit_mut_with(&mut replacer);
         if !replacer.found {
-            value_test = seq_expr(
-                assign_expr(capture.clone(), selection.value.clone()),
-                value_test,
-            );
+            let read = assign_expr(capture.clone(), selection.value.clone());
+            // A value built from temps of the test is ready only after it.
+            value_test = if temps
+                .iter()
+                .any(|temp| contains_ident_ref(&selection.value, temp))
+            {
+                ordered_and(value_test, seq_expr(read, bool_lit(true)))
+            } else {
+                seq_expr(read, value_test)
+            };
         }
         capture_decls.push(capture.clone());
         value_captures.push(ident_expr(&capture));
