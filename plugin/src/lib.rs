@@ -1302,6 +1302,15 @@ impl TsPatternTransformer {
         arm: &MatchArm,
         patterns: Vec<(Expr, Vec<SelectionBinding>)>,
     ) -> Option<(Expr, Expr, Vec<Ident>)> {
+        // The patterns share one selection object, so names that a failed
+        // pattern wrote first come first.
+        let names = patterns
+            .iter()
+            .flat_map(|(_, selections)| selections.iter().map(|selection| &selection.name))
+            .collect::<HashSet<_>>();
+        if names.len() > 1 {
+            return None;
+        }
         let (mut test, handler_selections) = self.alternatives_test(patterns)?;
         if let Some(guard) = &arm.guard {
             test = and(test, predicate_result(guard, guard_input));
