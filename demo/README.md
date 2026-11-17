@@ -1,6 +1,6 @@
 # ts-pattern SWC plugin Vite demo
 
-Create Vite React TypeScript app that installs the local npm package:
+Vite React app that installs the local `plugin/` package.
 
 ```sh
 npm install
@@ -8,9 +8,8 @@ npm run build
 npm run test:browser
 ```
 
-The page accepts a JSON textarea of Result records to parse and render, then compares three async benchmark columns:
+Paste Result records as JSON, then run the benchmark. It renders the records with two renderers and compares their throughput:
 
-- `ts-pattern AS-IS`
 - `ts-pattern with swc-plugin`
-- `plain JS with switch/if`
+- `plain JS with nested switch`
 

@@ -1404,8 +1404,9 @@ impl TsPatternTransformer {
     /// object, so each name takes its value from the pattern that matched.
     /// Patterns that select different names give `None`, because a pattern
     /// that failed can leave names that the matched pattern lacks;
-    /// `union_test` writes those through `union_writes`. Returns the joined test and selections that read capture temps, which
-    /// go to `pending_temps`.
+    /// `union_test` writes those through `union_writes`. Returns the joined
+    /// test and selections that read capture temps, which go to
+    /// `pending_temps`.
     fn alternatives_test(
         &self,
         patterns: Vec<(Expr, Vec<SelectionBinding>)>,
@@ -3808,8 +3809,9 @@ fn collect_pat_bindings(param: &Pat, value: Expr, bindings: &mut Vec<(Id, Expr)>
 /// Substituting arguments delays their evaluation to each use, which is
 /// unobservable only when the body runs no code before reading them and
 /// nested functions do not capture them. A call runs after its callee and
-/// arguments, so `match(v).exhaustive()` may read `v`. An identifier or literal may be read any
-/// number of times; other arguments must be read exactly once.
+/// arguments, so `match(v).exhaustive()` may read `v`. An identifier or
+/// literal may be read any number of times; other arguments must be read
+/// exactly once.
 fn is_simple_inline_body(body: &Expr, bindings: &[(Id, Expr)]) -> bool {
     let mut usage = BindingUsage {
         bindings,

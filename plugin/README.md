@@ -11,7 +11,7 @@ const label = match(input)
   .otherwise(() => -1)
 ```
 
-The plugin emits ternaries, `switch` statements, or ordered `if` blocks, preserving input evaluation and callback arguments. Unsupported chains retain the original ts-pattern runtime.
+The compiled code evaluates the input and calls the handlers like ts-pattern does. Chains that the plugin cannot compile keep the ts-pattern runtime.
 
 ![Playground with the literals example: TypeScript source, ts-pattern output and plugin output](https://raw.githubusercontent.com/scarf005/swc-plugin-ts-pattern/main/docs/playground.webp)
 
