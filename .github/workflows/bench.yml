@@ -14,10 +14,12 @@ on:
       - web/package-lock.json
       - web/src/**
       - web/ts-pattern.bench.ts
+  schedule:
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -62,6 +64,7 @@ jobs:
         working-directory: plugin
 
       - run: just bench-file
+        env: { BENCH_JSON: "${{ runner.temp }}/bench.json" }
 
       - run: |
           {
@@ -74,3 +77,14 @@ jobs:
         with:
           name: benchmark
           path: docs/just-bench.txt
+
+      - name: Commit the table to the bench branch
+        if: github.event_name != 'push'
+        run: |
+          git fetch --depth=1 origin bench && git worktree add bench-out FETCH_HEAD || git worktree add --orphan -b bench bench-out
+          node scripts/bench-svg.mts "$RUNNER_TEMP/bench.json" bench-out/bench.svg "ops/s, higher is better. $(date -u +%F), ${GITHUB_SHA::7}"
+          cd bench-out
+          git add bench.svg
+          git -c user.name="github-actions[bot]" -c user.email="41898283+github-actions[bot]@users.noreply.github.com" commit -m "chore: update benchmark table for ${GITHUB_SHA::7}"
+          git push origin HEAD:bench
+          curl -fsS "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@bench/bench.svg"

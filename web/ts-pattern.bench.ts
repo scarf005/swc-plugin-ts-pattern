@@ -1,5 +1,5 @@
-import { readdir, readFile, stat } from "node:fs/promises"
-import { test } from "vite-plus/test"
+import { readdir, readFile, stat, writeFile } from "node:fs/promises"
+import { afterAll, test } from "vite-plus/test"
 import { prepareBenchmarkInputs } from "./src/benchmark.ts"
 import { garbageInputPairsForInputs, seedFromString } from "./src/property.ts"
 import { getModule, type ModuleExports } from "./src/runtime.ts"
@@ -248,8 +248,22 @@ const [examples, tsPatternBenchmarkCases] = await Promise.all([
   Promise.all(benchmarkSources.map(loadTsPatternBenchmarkCase)),
 ])
 
+// Operations per second for each case and target, written to `BENCH_JSON`.
+const throughput: Record<string, Record<string, number>> = {}
+
 for (const { id, targets } of [...tsPatternBenchmarkCases, ...examples]) {
   test(id, async ({ bench }) => {
-    await bench.compare(...targets.map(({ label, module }) => bench(label, createRunner(module))))
+    const results = await bench.compare(
+      ...targets.map(({ label, module }) => bench(label, createRunner(module))),
+    )
+    throughput[id] = Object.fromEntries(
+      targets.map(({ label }) => [label, results.get(label).throughput.mean]),
+    )
   })
 }
+
+afterAll(async () => {
+  if (process.env.BENCH_JSON) {
+    await writeFile(process.env.BENCH_JSON, JSON.stringify(throughput, null, 2))
+  }
+})

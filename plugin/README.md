@@ -121,7 +121,13 @@ Set `SWC_PLUGIN_TS_PATTERN_PATH` to use a custom-built WASM with the loader. For
 
 ## Benchmark
 
-`just bench` compares [`bdbaraban/ts-pattern-benchmark`](https://github.com/bdbaraban/ts-pattern-benchmark) cases across raw `ts-pattern`, native code, and plugin output, then runs the local examples. The results below come from the [`Benchmark` workflow](https://github.com/scarf005/swc-plugin-ts-pattern/actions/workflows/bench.yml) on a GitHub-hosted runner; `just update-readme-bench-ci` copies the run for the current commit into this section.
+`just bench` compares [`bdbaraban/ts-pattern-benchmark`](https://github.com/bdbaraban/ts-pattern-benchmark) cases across raw `ts-pattern`, native code, and plugin output, then runs the local examples.
+
+The table below shows operations per second from a weekly run of the [`Benchmark` workflow](https://github.com/scarf005/swc-plugin-ts-pattern/actions/workflows/bench.yml). The speedup column is plugin output throughput divided by raw `ts-pattern` throughput.
+
+![Benchmark table](https://cdn.jsdelivr.net/gh/scarf005/swc-plugin-ts-pattern@bench/bench.svg)
+
+The full output below comes from the [`Benchmark` workflow](https://github.com/scarf005/swc-plugin-ts-pattern/actions/workflows/bench.yml) on a GitHub-hosted runner; `just update-readme-bench-ci` copies the run for the current commit into this section.
 
 <!-- automd:file src="../docs/just-bench.txt" code lang="text" -->
 
