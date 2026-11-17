@@ -59,14 +59,9 @@ const buildOptions = (options = {}) => {
   }
 }
 
+// async, so a missing plugin file rejects instead of throwing.
 export const transformTsPattern = async (source, options = {}) =>
-  await transform(
-    source,
-    buildOptions({
-      ...options,
-      pluginPath: options.pluginPath ?? (await defaultPluginPath()),
-    }),
-  )
+  await transform(source, buildOptions(options))
 
 export const transformTsPatternSync = (source, options = {}) =>
   transformSync(source, buildOptions(options))

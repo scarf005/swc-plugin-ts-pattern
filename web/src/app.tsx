@@ -124,10 +124,6 @@ const configureTypeScript = () => {
     strict: true,
     target: ts.ScriptTarget.ESNext,
   })
-  ts.typescriptDefaults.setDiagnosticsOptions({
-    noSemanticValidation: false,
-    noSyntaxValidation: false,
-  })
   for (const [path, content] of Object.entries(tsPatternTypes)) {
     ts.typescriptDefaults.addExtraLib(
       content,

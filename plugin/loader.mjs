@@ -84,7 +84,6 @@ export const load = (url, context, nextLoad) => {
   const result = transformTsPatternSync(source, {
     ...options,
     filename,
-    pluginPath: options.pluginPath,
     swcOptions: {
       ...options.swcOptions,
       module: options.swcOptions?.module ?? { type: format === "commonjs" ? "commonjs" : "es6" },
