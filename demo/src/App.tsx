@@ -26,7 +26,7 @@ type BenchmarkState =
   | { status: 'error'; message: string; runners: RunnerState[] }
 
 const repositoryUrl = 'https://github.com/scarf005/swc-plugin-ts-pattern'
-const playgroundUrl = 'https://ts-pattern-swc-plugin.pages.dev/'
+const playgroundUrl = 'https://scarf005.github.io/swc-plugin-ts-pattern/'
 
 const runners: Runner[] = [
   {

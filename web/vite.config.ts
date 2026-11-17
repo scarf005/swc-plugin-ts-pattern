@@ -2,6 +2,8 @@ import preact from "@preact/preset-vite"
 import { defineConfig } from "vite-plus"
 
 export default defineConfig({
+  // GitHub Pages serves the playground from /swc-plugin-ts-pattern/.
+  base: process.env.BASE_PATH ?? "/",
   plugins: [preact()],
   test: {
     projects: [
