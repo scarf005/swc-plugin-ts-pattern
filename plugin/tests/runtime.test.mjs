@@ -218,6 +218,23 @@ for (const type of ["module", "commonjs"]) {
   )
 }
 
+// In a CommonJS file the real file name loads on every Node.js. A mapped name needs the resolve hook.
+for (const [specifier, skip] of [
+  ["./child.ts", false],
+  ["./child.js", commonjsResolveSkip],
+]) {
+  test(`Node loader resolves ${specifier} to child.ts in a CommonJS file`, { skip }, () =>
+    withEntry(async (entry, directory) => {
+      await writeFile(`${directory}/child.ts`, child)
+      await writeFile(entry, `const { classify } = require("${specifier}"); ${report}`)
+      const output = execFileSync(process.execPath, ["--import", register, entry], {
+        encoding: "utf8",
+      })
+      assert.deepEqual(JSON.parse(output), { result: "one", compiled: true, commonjs: true })
+    }),
+  )
+}
+
 for (const [specifier, extension] of [
   ["js", "ts"],
   ["js", "tsx"],
