@@ -9,6 +9,13 @@ const pluginRoot = fileURLToPath(new URL("../", import.meta.url))
 const cli = fileURLToPath(new URL("../run.mjs", import.meta.url))
 const register = fileURLToPath(new URL("../register.mjs", import.meta.url))
 const denoAvailable = spawnSync("deno", ["--version"]).status === 0
+// Node.js calls the resolve hook for `require` in a CommonJS file from 24.18.0 and 26.2.0.
+// These temporary entries are CommonJS: the nearest package.json is the plugin's.
+const [major, minor] = process.versions.node.split(".").map(Number)
+const commonjsResolveSkip =
+  major > 26 || (major === 26 && minor >= 2) || (major === 24 && minor >= 18)
+    ? false
+    : "this Node.js does not call resolve hooks for require() in a CommonJS file"
 
 const withEntry = async (run) => {
   const directory = await mkdtemp(`${pluginRoot}tests/runtime-`)
@@ -137,7 +144,7 @@ for (const runtime of ["Node", "Deno"]) {
       `${runtime} loader executes .${extension} modules with ${
         runtime === "Node" ? "extensionless" : "explicit"
       } TypeScript imports`,
-      { skip: runtime === "Deno" && !denoAvailable },
+      { skip: runtime === "Deno" ? !denoAvailable : commonjsResolveSkip },
       () =>
         withEntry(async (entry, directory) => {
           const module = `${directory}/child.${extension}`
@@ -186,7 +193,8 @@ const report =
   'console.log(JSON.stringify({ result: classify(1), compiled: !classify.toString().includes(".with("), commonjs: typeof module !== "undefined" }));'
 
 for (const type of ["module", "commonjs"]) {
-  test(`Node loader runs .ts as ${type} in a "type": "${type}" package`, () =>
+  const skip = type === "commonjs" && commonjsResolveSkip
+  test(`Node loader runs .ts as ${type} in a "type": "${type}" package`, { skip }, () =>
     withEntry(async (entry, directory) => {
       await writeFile(`${directory}/package.json`, JSON.stringify({ type }))
       await writeFile(`${directory}/child.ts`, child)
@@ -206,7 +214,8 @@ for (const type of ["module", "commonjs"]) {
         compiled: true,
         commonjs: type === "commonjs",
       })
-    }))
+    }),
+  )
 }
 
 for (const [specifier, extension] of [
