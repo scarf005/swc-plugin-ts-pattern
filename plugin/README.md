@@ -66,7 +66,7 @@ Reasons:
 
 ## Run TypeScript directly
 
-The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed. On Node.js, `.ts` and `.tsx` files load as CommonJS when the nearest `package.json` sets `"type": "commonjs"`. Imports of `./foo.js`, `./foo.jsx`, `./foo.mjs`, and `./foo.cjs` resolve to the matching TypeScript source.
+The loader compiles local `.ts`, `.tsx`, `.mts`, and `.cts` files before evaluation. It uses synchronous `node:module.registerHooks()`. Remote application modules are not transformed. On Node.js, `.ts` and `.tsx` files load as CommonJS when the nearest `package.json` sets `"type": "commonjs"`. Imports of `./foo.js`, `./foo.jsx`, `./foo.mjs`, and `./foo.cjs` resolve to the matching TypeScript source. In a CommonJS file, these imports and imports without an extension need Node.js 24.18 or later on the 24.x line, or 26.2 or later. Earlier versions need the real file name, such as `./foo.ts`.
 
 ### Node.js
 
