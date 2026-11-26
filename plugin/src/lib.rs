@@ -4454,27 +4454,36 @@ fn record_selection_match(
     )
 }
 
-/// Each key selection collects matched keys; each value selection collects
-/// its own array of values.
+/// Each key selection gets its own array of the matched keys; each value
+/// selection collects its own array of values.
 fn record_selection_object(
     selected_keys: &Ident,
     selected_values: &[Ident],
     key_selections: &[SelectionBinding],
     value_selections: &[SelectionBinding],
 ) -> Expr {
-    let arrays = key_selections
+    let key_arrays = key_selections.iter().enumerate().map(|(index, selection)| {
+        let keys = ident_expr(selected_keys);
+        // A handler can change the array of one name, so later names get a copy.
+        let array = match index {
+            0 => keys,
+            _ => call_expr(member_expr(keys, "slice"), vec![]),
+        };
+        (selection, array)
+    });
+    let value_arrays = value_selections
         .iter()
-        .map(|selection| (selection, selected_keys))
-        .chain(value_selections.iter().zip(selected_values));
+        .zip(selected_values)
+        .map(|(selection, array)| (selection, ident_expr(array)));
     let mut props = Vec::new();
-    for (selection, array) in arrays {
+    for (selection, array) in key_arrays.chain(value_arrays) {
         let Some(name) = &selection.name else {
             // An anonymous selection is the only one.
-            return ident_expr(array);
+            return array;
         };
         props.push(PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
             key: selection_prop_name(name),
-            value: Box::new(ident_expr(array)),
+            value: Box::new(array),
         }))));
     }
     Expr::Object(ObjectLit {
