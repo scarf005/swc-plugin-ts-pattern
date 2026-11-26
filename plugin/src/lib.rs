@@ -15,24 +15,11 @@ use swc_core::{
 
 #[plugin_transform]
 pub fn process_transform(program: Program, metadata: TransformPluginProgramMetadata) -> Program {
-    let on_fallback = match metadata
-        .get_transform_plugin_config()
-        .and_then(|config| serde_json::from_str::<serde_json::Value>(&config).ok())
-        .as_ref()
-        .and_then(|config| config.get("onFallback"))
-    {
-        None => None,
-        Some(value) => match value.as_str() {
-            Some("warn") => Some(false),
-            Some("error") => Some(true),
-            _ => {
-                HANDLER.with(|handler| {
-                    handler.err(r#"swc-plugin-ts-pattern: onFallback must be "warn" or "error""#)
-                });
-                None
-            }
-        },
-    };
+    let on_fallback = fallback_is_error(metadata.get_transform_plugin_config().as_deref())
+        .unwrap_or_else(|message| {
+            HANDLER.with(|handler| handler.err(&format!("swc-plugin-ts-pattern: {message}")));
+            None
+        });
     let mut transformer = TsPatternTransformer {
         unresolved_ctxt: SyntaxContext::empty().apply_mark(metadata.unresolved_mark),
         ..Default::default()
@@ -59,6 +46,24 @@ pub fn process_transform(program: Program, metadata: TransformPluginProgramMetad
         }
     }
     program
+}
+
+/// Reads `onFallback` from the plugin options: `Some(true)` for `"error"`,
+/// `Some(false)` for `"warn"`. Any other key or value is an error.
+fn fallback_is_error(config: Option<&str>) -> Result<Option<bool>, String> {
+    type Options = serde_json::Map<String, serde_json::Value>;
+    let options = serde_json::from_str::<Option<Options>>(config.unwrap_or("null"))
+        .map_err(|_| "options must be an object".to_string())?
+        .unwrap_or_default();
+    if let Some(key) = options.keys().find(|key| *key != "onFallback") {
+        return Err(format!(r#"unknown option "{key}" (supported: onFallback)"#));
+    }
+    match options.get("onFallback").map(serde_json::Value::as_str) {
+        None => Ok(None),
+        Some(Some("warn")) => Ok(Some(false)),
+        Some(Some("error")) => Ok(Some(true)),
+        Some(_) => Err(r#"onFallback must be "warn" or "error""#.to_string()),
+    }
 }
 
 /// Temps by selection name.
