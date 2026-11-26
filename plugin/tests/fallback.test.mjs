@@ -53,6 +53,19 @@ export const run = (input: unknown) => match(input).with(1, () => 1).otherwise((
   assert.doesNotMatch(code, /\.with\(/)
 })
 
+for (const [pluginOptions, message] of [
+  [{ onFalback: "error" }, /unknown option "onFalback" \(supported: onFallback\)/],
+  [{ onFallback: "error", strict: true }, /unknown option "strict"/],
+  ["error", /options must be an object/],
+]) {
+  test(`rejects the plugin options ${JSON.stringify(pluginOptions)}`, async () => {
+    await assert.rejects(
+      transformTsPattern(source, { filename: "fallback.ts", pluginOptions }),
+      message,
+    )
+  })
+}
+
 test("an unknown onFallback value fails the transform", async () => {
   await assert.rejects(
     transformTsPattern(source, { filename: "fallback.ts", pluginOptions: { onFallback: "log" } }),
