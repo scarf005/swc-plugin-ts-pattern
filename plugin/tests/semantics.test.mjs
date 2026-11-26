@@ -898,6 +898,27 @@ for (const key of ["P.string", "P.string.select('key')"]) {
   })
 }
 
+// Pushes to the array of `x`. ts-pattern keeps one array per name, so `y` stays as selected.
+for (const [pattern, input, selected] of [
+  ['P.record(P.select("y", P.select("x")), {})', "{ a: {}, b: {} }", ["a", "b"]],
+  ['P.record(P.string, P.select("y", P.select("x")))', "{ a: 1, b: 2 }", [1, 2]],
+  ['P.array(P.select("y", P.select("x")))', "[1, 2]", [1, 2]],
+]) {
+  test(`selects a separate array for each name in ${pattern}`, async () => {
+    const code = await assertEquivalent(
+      `
+      import { match, P } from "ts-pattern";
+      export const run = () =>
+        match(${input})
+          .with(${pattern}, ({ x, y }) => (x.push("pushed"), { x, y }))
+          .otherwise(() => null);
+    `,
+      { x: [...selected, "pushed"], y: selected },
+    )
+    assert.doesNotMatch(code, /\.with\(/)
+  })
+}
+
 test("spread pattern arguments keep their spread meaning", async () => {
   await assertEquivalent(
     `
